@@ -28,6 +28,7 @@ class StreamingService:
     LIVE_SENTENCE_END_SILENCE_SECONDS = 0.22
     LIVE_AUTO_GAIN_TARGET_PEAK_NORMALIZED = 0.12
     LIVE_AUTO_GAIN_MAX_MULTIPLIER = 45.0
+    MANUAL_DRAFT_LOCK_WARNING = "Locked the current live caption after a manual edit. New speech will continue in the next segment."
 
     def __init__(
         self,
@@ -177,6 +178,34 @@ class StreamingService:
             speech_windows=speech_windows,
         )
         plan = self.context_refinement_service.refine_live_result(session, result, request.options)
+        segmented_preview = plan.result.__class__(
+            engine_name=plan.result.engine_name,
+            segments=[self._clone_segment(segment) for segment in plan.result.segments],
+            speakers=plan.result.speakers,
+            duration_seconds=plan.result.duration_seconds,
+            detected_language=plan.result.detected_language,
+            warnings=list(plan.result.warnings),
+        )
+        preview_finalized_segments, preview_draft_segments, preview_visible_segments = self._segment_live_caption_flow(
+            session,
+            segmented_preview,
+            speech_windows=speech_windows,
+            chunk_end_seconds=chunk_end_seconds,
+        )
+        if not request.options.post_process or not preview_finalized_segments:
+            plan.result.segments = preview_visible_segments
+            plan.result.warnings = list(segmented_preview.warnings)
+            session = self.session_store.apply_live_result(
+                session,
+                request.sequence,
+                duration_seconds,
+                plan.result,
+                draft_segments=preview_draft_segments,
+                replace_tail_count=plan.replace_tail_count,
+                replacement_segments=list(preview_finalized_segments),
+            )
+            return plan.result, session
+
         post_process_plan = self.post_processing_service.refine_live_result(
             session,
             plan.result,
@@ -196,20 +225,22 @@ class StreamingService:
                 corrected_tail_segments = list(post_process_plan.replacement_segments)
                 current_chunk_segments = []
 
+        segmented_result = post_process_plan.result.__class__(
+            engine_name=post_process_plan.result.engine_name,
+            segments=list(current_chunk_segments),
+            speakers=post_process_plan.result.speakers,
+            duration_seconds=post_process_plan.result.duration_seconds,
+            detected_language=post_process_plan.result.detected_language,
+            warnings=list(post_process_plan.result.warnings),
+        )
         finalized_segments, draft_segments, visible_segments = self._segment_live_caption_flow(
             session,
-            post_process_plan.result.__class__(
-                engine_name=post_process_plan.result.engine_name,
-                segments=list(current_chunk_segments),
-                speakers=post_process_plan.result.speakers,
-                duration_seconds=post_process_plan.result.duration_seconds,
-                detected_language=post_process_plan.result.detected_language,
-                warnings=list(post_process_plan.result.warnings),
-            ),
+            segmented_result,
             speech_windows=speech_windows,
             chunk_end_seconds=chunk_end_seconds,
         )
         plan.result.segments = visible_segments
+        plan.result.warnings = list(segmented_result.warnings)
         session = self.session_store.apply_live_result(
             session,
             request.sequence,
@@ -284,6 +315,13 @@ class StreamingService:
         draft_segments = [self._clone_segment(segment) for segment in session.draft_segments]
         pending = draft_segments[-1] if draft_segments else None
         visible_segments: list = []
+
+        if pending is not None and pending.manually_edited:
+            finalized_segments.append(self._finalize_segment(pending))
+            draft_segments = []
+            pending = None
+            if self.MANUAL_DRAFT_LOCK_WARNING not in result.warnings:
+                result.warnings = [*result.warnings, self.MANUAL_DRAFT_LOCK_WARNING]
 
         incoming_segments = [self._clone_segment(segment, is_final=False) for segment in result.segments if segment.text.strip()]
         for incoming in incoming_segments:

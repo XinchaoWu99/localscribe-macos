@@ -28,8 +28,8 @@ class SegmentWord:
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "SegmentWord":
         return cls(
-            start=float(payload.get("start", 0.0)),
-            end=float(payload.get("end", 0.0)),
+            start=_coerce_float(payload.get("start"), default=0.0),
+            end=_coerce_float(payload.get("end"), default=0.0),
             text=str(payload.get("text", "")).strip(),
             confidence=_maybe_float(payload.get("confidence")),
         )
@@ -106,15 +106,15 @@ class TranscriptSegment:
 
         return cls(
             segment_id=str(payload.get("segmentId", "")),
-            start=float(payload.get("start", 0.0)),
-            end=float(payload.get("end", 0.0)),
+            start=_coerce_float(payload.get("start"), default=0.0),
+            end=_coerce_float(payload.get("end"), default=0.0),
             text=str(payload.get("text", "")).strip(),
             confidence=_maybe_float(payload.get("confidence")),
             speaker_id=_maybe_str(payload.get("speakerId")),
             speaker_name=_maybe_str(payload.get("speakerName")),
-            is_final=bool(payload.get("isFinal", True)),
+            is_final=_coerce_bool(payload.get("isFinal"), default=True),
             source=str(payload.get("source", "file")),
-            manually_edited=bool(payload.get("manuallyEdited", False)),
+            manually_edited=_coerce_bool(payload.get("manuallyEdited"), default=False),
             edited_at=_maybe_str(payload.get("editedAt")),
             words=words,
         )
@@ -144,8 +144,8 @@ class SpeakerProfile:
         return cls(
             speaker_id=str(payload.get("speakerId", "")),
             label=str(payload.get("label", "")).strip(),
-            enrolled=bool(payload.get("enrolled", False)),
-            samples=int(payload.get("samples", 0)),
+            enrolled=_coerce_bool(payload.get("enrolled"), default=False),
+            samples=_coerce_int(payload.get("samples"), default=0),
             similarity=_maybe_float(payload.get("similarity")),
         )
 
@@ -250,15 +250,16 @@ class LiveSession:
         if not normalized:
             raise ValueError("Segment text cannot be empty.")
 
-        for segment in self.segments:
-            if segment.segment_id != segment_id:
-                continue
-            segment.text = normalized
-            # Word alignment is no longer trustworthy after a manual edit.
-            segment.words = []
-            segment.manually_edited = True
-            segment.edited_at = utcnow_iso()
-            return segment
+        for segment_collection in (self.segments, self.draft_segments):
+            for segment in segment_collection:
+                if segment.segment_id != segment_id:
+                    continue
+                segment.text = normalized
+                # Word alignment is no longer trustworthy after a manual edit.
+                segment.words = []
+                segment.manually_edited = True
+                segment.edited_at = utcnow_iso()
+                return segment
 
         raise KeyError(f"Unknown segment: {segment_id}")
 
@@ -296,16 +297,18 @@ class LiveSession:
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "LiveSession":
+        created_at = _coerce_str(payload.get("createdAt"), default=utcnow_iso())
+        updated_at = _coerce_str(payload.get("updatedAt"), default=created_at)
         session = cls(
             session_id=str(payload.get("sessionId", "")),
-            created_at=str(payload.get("createdAt", utcnow_iso())),
-            updated_at=str(payload.get("updatedAt", payload.get("createdAt", utcnow_iso()))),
-            chunk_count=int(payload.get("chunkCount", 0)),
-            total_audio_seconds=float(payload.get("totalAudioSeconds", 0.0)),
+            created_at=created_at,
+            updated_at=updated_at,
+            chunk_count=_coerce_int(payload.get("chunkCount"), default=0),
+            total_audio_seconds=_coerce_float(payload.get("totalAudioSeconds"), default=0.0),
             engine_name=str(payload.get("engine", "mock")),
             session_type=str(payload.get("sessionType", "live")),
             title=_maybe_str(payload.get("title")),
-            warnings=[str(item) for item in payload.get("warnings", []) if isinstance(item, str)],
+            warnings=_coerce_str_list(payload.get("warnings")),
         )
 
         raw_segments = payload.get("segments")
@@ -342,6 +345,53 @@ def _maybe_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_float(value: object | None, *, default: float) -> float:
+    parsed = _maybe_float(value)
+    return parsed if parsed is not None else default
+
+
+def _coerce_int(value: object | None, *, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_bool(value: object | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _coerce_str(value: object | None, *, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def _coerce_str_list(value: object | None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
 
 
 def _maybe_str(value) -> str | None:

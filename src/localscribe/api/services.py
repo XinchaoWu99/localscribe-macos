@@ -33,6 +33,7 @@ class AppServices:
         startup = getattr(self.engine, "startup", None)
         if callable(startup):
             startup()
+        self.post_processing_service.startup()
 
     def shutdown(self) -> None:
         self.system_audio_service.shutdown()

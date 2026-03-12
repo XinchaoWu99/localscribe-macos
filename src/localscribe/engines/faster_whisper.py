@@ -79,7 +79,7 @@ class FasterWhisperEngine(TranscriptionEngine):
         model = self._get_model()
         kwargs: dict[str, object] = {
             "vad_filter": False,
-            "word_timestamps": True,
+            "word_timestamps": not options.live,
             "condition_on_previous_text": False,
         }
         if options.language:

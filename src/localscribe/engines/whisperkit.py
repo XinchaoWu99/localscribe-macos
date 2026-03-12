@@ -95,8 +95,9 @@ class WhisperKitServerEngine(TranscriptionEngine):
                 ("response_format", (None, "verbose_json")),
                 ("temperature", (None, "0")),
                 ("timestamp_granularities[]", (None, "segment")),
-                ("timestamp_granularities[]", (None, "word")),
             ]
+            if not options.live:
+                multipart_fields.append(("timestamp_granularities[]", (None, "word")))
             if options.language:
                 multipart_fields.append(("language", (None, options.language)))
             if options.prompt:

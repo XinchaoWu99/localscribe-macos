@@ -294,6 +294,37 @@ def test_prepare_backend_autostarts_ollama(monkeypatch, tmp_path) -> None:
     assert status["backend"] == "ollama"
 
 
+def test_startup_prepares_default_backend(monkeypatch) -> None:
+    service = LocalPostProcessingService(
+        enabled=True,
+        backend_name="ollama",
+        model="qwen2.5:3b-instruct",
+    )
+    selected: dict[str, str | None] = {}
+
+    def fake_prepare(options=None):  # noqa: ANN001
+        backend_name, model = service._resolve_selection(options)
+        selected["backend"] = backend_name
+        selected["model"] = model
+        return {
+            "enabled": True,
+            "backend": backend_name,
+            "ready": True,
+            "model": model,
+            "warning": None,
+        }
+
+    monkeypatch.setattr(service, "prepare_backend", fake_prepare)
+
+    status = service.startup()
+
+    assert selected == {
+        "backend": "ollama",
+        "model": "qwen2.5:3b-instruct",
+    }
+    assert status["ready"] is True
+
+
 def test_post_processing_skips_manually_edited_tail_rewrites() -> None:
     backend = FakePostProcessorBackend(
         (

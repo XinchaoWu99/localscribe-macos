@@ -32,6 +32,10 @@ const LOW_INPUT_WARNING = "Input level is very low. Check the selected microphon
 const NO_SPEECH_WARNING = "No speech detected in the latest audio chunk.";
 const LIVE_FALLBACK_WARNING = "Live speech fallback used because browser audio was below the default VAD gate.";
 const INPUT_LEVEL_IDLE = "Waiting for audio";
+const LIVE_BOOTSTRAP_CHUNK_MILLIS = 1200;
+const CAPTURE_WORKLET_NAME = "localscribe-capture-processor";
+
+let _captureWorkletModuleUrl = null;
 
 const ENTRY_PRESETS = {
   microphone: {
@@ -1512,6 +1516,69 @@ function currentSegmentText(segment) {
   return state.segmentDrafts[segment.segmentId] ?? segment.text ?? "";
 }
 
+function sessionTimelineSegments() {
+  return [...(state.session?.segments || []), ...(state.session?.draftSegments || [])];
+}
+
+function sessionSegmentById(segmentId) {
+  return sessionTimelineSegments().find((segment) => segment.segmentId === segmentId) || null;
+}
+
+function visibleLiveSegmentCount() {
+  return sessionTimelineSegments().length;
+}
+
+function shouldUsePostProcessingForLiveChunk() {
+  return ALWAYS_ENABLE_POST_PROCESSING && visibleLiveSegmentCount() > 0;
+}
+
+function liveStartupState() {
+  const liveCapture = state.liveCapture;
+  if (!liveCapture || visibleLiveSegmentCount() > 0) {
+    return null;
+  }
+
+  if (liveCapture.mode === "mac-system-audio") {
+    if (liveCapture.awaitingAck || Number(state.session?.chunkCount || 0) > 0) {
+      return {
+        status: "Transcribing first text",
+        summary: "The first Mac output chunk is in the transcription pipeline now.",
+        detail: "Current Mac sound output is already flowing. The first transcript line appears after the first chunk finishes local transcription.",
+      };
+    }
+    return {
+      status: "Listening for audio",
+      summary: "Waiting for the first usable Mac output turn before transcription starts.",
+      detail: "Current Mac sound output capture is live. The first transcript line appears as soon as LocalScribe receives a usable chunk from the current output.",
+    };
+  }
+
+  if (liveCapture.awaitingAck) {
+    return {
+      status: "Transcribing first text",
+      summary: "The first startup chunk is being transcribed locally right now.",
+      detail: "The startup chunk has already been sent. The first transcript line appears after this local transcription pass completes.",
+    };
+  }
+
+  const bufferedSamples = Number(liveCapture.pendingSamples || 0);
+  const targetSamples = Number(liveCapture.targetSamplesPerChunk || 0);
+  if (bufferedSamples > 0 && targetSamples > 0) {
+    const percent = Math.max(1, Math.min(99, Math.round((bufferedSamples / targetSamples) * 100)));
+    return {
+      status: "Buffering first chunk",
+      summary: `Listening now. ${percent}% of the startup chunk is buffered before the first transcript pass begins.`,
+      detail: "Recording is live. LocalScribe is filling a shorter startup chunk first so the first transcript line appears sooner.",
+    };
+  }
+
+  return {
+    status: "Listening for speech",
+    summary: "Recording is live and waiting for the first usable speech chunk.",
+    detail: "The microphone is already live. The first transcript line appears after LocalScribe buffers and transcribes the startup chunk.",
+  };
+}
+
 function updateTranscriptTextFromDrafts() {
   if (!state.transcript) {
     return;
@@ -1540,7 +1607,7 @@ async function flushPendingSegmentTextSaves() {
 
   const drafts = Object.entries(state.segmentDrafts);
   for (const [segmentId, draftText] of drafts) {
-    const currentSegment = (state.session?.segments || []).find((segment) => segment.segmentId === segmentId);
+    const currentSegment = sessionSegmentById(segmentId);
     if (!currentSegment || currentSegment.text === draftText.trim()) {
       delete state.segmentDrafts[segmentId];
       continue;
@@ -1572,7 +1639,7 @@ async function saveSegmentText(segmentId, text) {
     return;
   }
 
-  const currentSegment = (state.session?.segments || []).find((segment) => segment.segmentId === segmentId);
+  const currentSegment = sessionSegmentById(segmentId);
   if (currentSegment && currentSegment.text === normalized) {
     delete state.segmentDrafts[segmentId];
     updateTranscriptTextFromDrafts();
@@ -1730,7 +1797,7 @@ function currentSourceAttentionCopy() {
       emptyBody:
         "LocalScribe is receiving very little signal from the selected source. Check the microphone choice, permission, distance, or source audio routing before expecting transcript text.",
       helper:
-        "The selected source is extremely quiet right now. Check microphone selection, Safari microphone permission, or move closer to the mic.",
+        "The selected source is extremely quiet right now. Check microphone selection, browser microphone permission, or move closer to the mic.",
     };
   }
   return {
@@ -1745,7 +1812,7 @@ function currentSourceAttentionCopy() {
     emptyBody:
       "LocalScribe has already checked multiple live chunks from this session, but none have turned into transcript text yet. Reconfirm the microphone choice, source routing, and speaking distance before continuing.",
     helper:
-      `LocalScribe has already checked ${chunkCount} live chunk${chunkCount === 1 ? "" : "s"} without transcript text yet. Reconfirm microphone selection, Safari permission, or source routing.`,
+      `LocalScribe has already checked ${chunkCount} live chunk${chunkCount === 1 ? "" : "s"} without transcript text yet. Reconfirm microphone selection, browser permission, or source routing.`,
   };
 }
 
@@ -1817,6 +1884,7 @@ function renderTranscript() {
   const lowInput = hasLowInputWarning();
   const sourceAttention = sessionNeedsSourceAttention();
   const attentionCopy = sourceAttention ? currentSourceAttentionCopy() : null;
+  const startupState = liveStartupState();
 
   els.modeValue.textContent = state.mode;
   els.durationValue.textContent = formatDuration(transcript?.durationSeconds || 0);
@@ -1842,10 +1910,12 @@ function renderTranscript() {
         ? "LocalScribe is finishing the last buffered chunk now. Your transcript will settle here when it completes."
         : sourceAttention && attentionCopy
           ? attentionCopy.hint
+          : startupState
+            ? startupState.detail
           : liveActive
-          ? state.liveCapture?.mode === "mac-system-audio"
-            ? "Mac sound output capture is live. New text lands here as soon as LocalScribe finishes each detected turn."
-            : "Recording is already live. The first text appears after the current short chunk finishes processing."
+            ? state.liveCapture?.mode === "mac-system-audio"
+              ? "Mac sound output capture is live. New text lands here as soon as LocalScribe finishes each detected turn."
+              : "Recording is already live. The first text appears after the current short chunk finishes processing."
           : hasSession
             ? "This session is ready. Start the mic when you want transcript segments to begin appearing here."
             : "Create a live session to populate the live editor.";
@@ -1879,7 +1949,14 @@ function renderTranscript() {
           <span>${similarity} · ${tag}</span>
         </div>
         <div class="speaker-chip-actions">
-          <input class="speaker-label-input" type="text" value="${escapeHtmlAttribute(speaker.label)}" aria-label="Rename speaker" />
+          <input
+            class="speaker-label-input"
+            id="speaker-label-${speaker.speakerId}"
+            name="speaker-label-${speaker.speakerId}"
+            type="text"
+            value="${escapeHtmlAttribute(speaker.label)}"
+            aria-label="Rename speaker"
+          />
           <button type="button" class="secondary speaker-save-button">Rename</button>
         </div>
       `;
@@ -1914,6 +1991,9 @@ function renderTranscript() {
     } else if (sourceAttention && attentionCopy) {
       emptyTitle = attentionCopy.emptyTitle;
       emptyBody = attentionCopy.emptyBody;
+    } else if (startupState) {
+      emptyTitle = startupState.status;
+      emptyBody = startupState.detail;
     } else if (liveActive) {
       emptyTitle = "Listening for the first transcript";
       emptyBody = state.liveCapture?.mode === "mac-system-audio"
@@ -1940,32 +2020,33 @@ function renderTranscript() {
     article.id = `segment-${segment.segmentId}`;
     article.classList.toggle("is-draft", segment.isFinal === false);
     article.querySelector(".segment-speaker").textContent = segment.speakerName || "Unassigned";
-    stateNode.textContent = segment.isFinal === false ? "Live caption" : "Locked";
+    stateNode.textContent = segment.isFinal === false ? "Live caption" : segment.manuallyEdited ? "Edited" : "Editable";
     article.querySelector(".segment-time").textContent = `${formatClock(segment.start)} - ${formatClock(segment.end)}`;
+    editor.id = `segment-editor-${segment.segmentId}`;
+    editor.name = `segment-editor-${segment.segmentId}`;
     editor.value = currentSegmentText(segment);
-    if (segment.isFinal === false) {
-      editor.readOnly = true;
-      editor.setAttribute("aria-readonly", "true");
-      editor.title = "This live caption keeps updating until the speaker pauses or the next speaker interrupts.";
-    } else {
-      editor.addEventListener("input", () => {
-        state.segmentDrafts[segment.segmentId] = editor.value;
-        autosizeTextarea(editor);
-        queueSegmentTextSave(segment.segmentId, editor.value);
-        updateTranscriptTextFromDrafts();
-      });
-      editor.addEventListener("blur", () => {
-        if (!_isRenderingTranscript) {
-          void saveSegmentText(segment.segmentId, editor.value);
-        }
-      });
-      editor.addEventListener("keydown", (event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-          event.preventDefault();
-          void saveSegmentText(segment.segmentId, editor.value);
-        }
-      });
-    }
+    editor.readOnly = false;
+    editor.removeAttribute("aria-readonly");
+    editor.title = segment.isFinal === false
+      ? "Editing this live caption locks the current wording and pushes later speech into the next segment."
+      : "Edits are saved back to this live session.";
+    editor.addEventListener("input", () => {
+      state.segmentDrafts[segment.segmentId] = editor.value;
+      autosizeTextarea(editor);
+      queueSegmentTextSave(segment.segmentId, editor.value);
+      updateTranscriptTextFromDrafts();
+    });
+    editor.addEventListener("blur", () => {
+      if (!_isRenderingTranscript) {
+        void saveSegmentText(segment.segmentId, editor.value);
+      }
+    });
+    editor.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        void saveSegmentText(segment.segmentId, editor.value);
+      }
+    });
     autosizeTextarea(editor);
     els.timeline.append(article);
   });
@@ -2000,6 +2081,8 @@ function renderSessionHistory() {
       <div class="session-card-copy">
         <input
           class="session-title-input"
+          id="session-title-${session.sessionId}"
+          name="session-title-${session.sessionId}"
           type="text"
           value="${escapeHtmlAttribute(session.title || "")}"
           placeholder="Name this live session"
@@ -2200,6 +2283,7 @@ function updateSessionChrome() {
   const sessionReference = currentSessionReferenceLabel();
   const sourceAttention = sessionNeedsSourceAttention();
   const attentionCopy = sourceAttention ? currentSourceAttentionCopy() : null;
+  const startupState = liveStartupState();
 
   if (liveFinishing) {
     els.sessionStatusText.textContent = "Finishing live";
@@ -2211,6 +2295,12 @@ function updateSessionChrome() {
     els.sessionStatusText.textContent = attentionCopy.status;
     els.sessionCaption.textContent = sessionId ? attentionCopy.caption : attentionCopy.caption.replace(`${sessionReference} `, "");
     els.liveSummary.textContent = attentionCopy.summary;
+  } else if (liveActive && startupState) {
+    els.sessionStatusText.textContent = startupState.status;
+    els.sessionCaption.textContent = sessionId
+      ? `${sessionReference} is live. ${startupState.detail}`
+      : startupState.detail;
+    els.liveSummary.textContent = startupState.summary;
   } else if (liveActive) {
     const macOutputMode = state.liveCapture?.mode === "mac-system-audio";
     els.sessionStatusText.textContent = macOutputMode ? "Capturing Mac output" : "Recording live";
@@ -2239,6 +2329,8 @@ function updateSessionChrome() {
   els.helperNote.textContent = liveActive
     ? sourceAttention && attentionCopy
       ? `${attentionCopy.helper}${cleanupSessionNote()}`
+      : startupState
+        ? `${startupState.summary}${cleanupSessionNote()}`
       : `Audio is flowing. Live segment length is ${formatChunkMillis(configuredChunkMillis())} and changes apply without restarting.${cleanupSessionNote()}`
     : captureHelperText();
   els.downloadExportButton.disabled = !sessionId;
@@ -2420,7 +2512,7 @@ async function acquireCaptureStream(sourceMode) {
   if (sourceMode === "browser-audio") {
     if (!navigator.mediaDevices?.getDisplayMedia) {
       throw new Error(
-        "Browser or screen audio capture is not available here. Safari is reliable for microphone capture; tab or system audio works better in Chromium-based browsers.",
+        "Browser or screen audio capture is not available here. Use Safari or Edge for live microphone capture. For direct Mac output capture, switch to Current Mac sound output.",
       );
     }
     const rawStream = await navigator.mediaDevices.getDisplayMedia({
@@ -2431,7 +2523,7 @@ async function acquireCaptureStream(sourceMode) {
     if (audioTracks.length === 0) {
       rawStream.getTracks().forEach((track) => track.stop());
       throw new Error(
-        "The selected screen share did not expose an audio track. In Safari, use microphone mode. In Chromium browsers, choose a tab or window with shared audio enabled.",
+        "The selected screen share did not expose an audio track. In Edge or another Chromium browser, choose a tab or window with shared audio enabled. On Safari, use microphone mode or Current Mac sound output.",
       );
     }
     const recorderStream = new MediaStream(audioTracks);
@@ -2468,7 +2560,7 @@ function captureHelperText() {
     return "LocalScribe can capture current Mac sound output, but the native helper needs to be built once first. The exact build command is shown below.";
   }
   if (els.captureSource.value === "browser-audio") {
-    return "Browser or screen audio capture depends on browser support. Use this for tab sharing. For direct Mac output capture, switch to Current Mac sound output.";
+    return "Browser or screen audio capture depends on browser support. Edge and other Chromium browsers are the best fit for tab audio. For direct Mac output capture, switch to Current Mac sound output.";
   }
   return `Choose a microphone input and let LocalScribe shape live turns around ${formatChunkMillis(configuredChunkMillis())} of rolling audio for the ${currentScenarioPreset().title.toLowerCase()} preset.${cleanupSessionNote()}`;
 }
@@ -2517,7 +2609,8 @@ async function startLiveAudioCapture(stream) {
   }
 
   const sourceNode = audioContext.createMediaStreamSource(stream);
-  const processorNode = audioContext.createScriptProcessor(4096, Math.min(sourceNode.channelCount || 1, 2), 1);
+  const channelCount = Math.min(sourceNode.channelCount || 1, 2);
+  const processorNode = await createLiveCaptureProcessor(audioContext, channelCount);
   const muteGain = audioContext.createGain();
   muteGain.gain.value = 0;
 
@@ -2528,25 +2621,19 @@ async function startLiveAudioCapture(stream) {
     muteGain,
     pendingBuffers: [],
     pendingSamples: 0,
-    targetSamplesPerChunk: calculateTargetSamples(audioContext.sampleRate, configuredChunkMillis()),
+    desiredChunkMillis: configuredChunkMillis(),
+    bootstrapMode: true,
+    targetSamplesPerChunk: calculateTargetSamples(
+      audioContext.sampleRate,
+      Math.min(configuredChunkMillis(), LIVE_BOOTSTRAP_CHUNK_MILLIS),
+    ),
     flushing: false,
     awaitingAck: false,
     stopRequested: false,
     inputStopped: false,
   };
 
-  processorNode.onaudioprocess = (event) => {
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    const monoSamples = quietInputBoost(mixToMono(event.inputBuffer));
-    liveCapture.pendingBuffers.push(monoSamples);
-    liveCapture.pendingSamples += monoSamples.length;
-    if (liveCapture.pendingSamples >= liveCapture.targetSamplesPerChunk && !liveCapture.flushing) {
-      void flushPendingAudioChunk(liveCapture, false);
-    }
-  };
+  attachLiveCaptureProcessor(processorNode, liveCapture);
 
   sourceNode.connect(processorNode);
   processorNode.connect(muteGain);
@@ -2554,12 +2641,116 @@ async function startLiveAudioCapture(stream) {
   return liveCapture;
 }
 
+async function createLiveCaptureProcessor(audioContext, channelCount) {
+  if (audioContext.audioWorklet && window.AudioWorkletNode) {
+    await ensureCaptureWorklet(audioContext);
+    return new AudioWorkletNode(audioContext, CAPTURE_WORKLET_NAME, {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      channelCount,
+      channelCountMode: "explicit",
+      channelInterpretation: "speakers",
+    });
+  }
+
+  return audioContext.createScriptProcessor(4096, channelCount, 1);
+}
+
+async function ensureCaptureWorklet(audioContext) {
+  if (_captureWorkletModuleUrl === null) {
+    const source = `
+      class LocalScribeCaptureProcessor extends AudioWorkletProcessor {
+        process(inputs, outputs) {
+          const input = inputs[0];
+          const output = outputs[0];
+          if (!input || input.length === 0) {
+            return true;
+          }
+
+          const frameCount = input[0]?.length || 0;
+          if (frameCount === 0) {
+            return true;
+          }
+
+          const mono = new Float32Array(frameCount);
+          let activeChannels = 0;
+          for (let channelIndex = 0; channelIndex < input.length; channelIndex += 1) {
+            const channel = input[channelIndex];
+            if (!channel || channel.length === 0) {
+              continue;
+            }
+            activeChannels += 1;
+            for (let index = 0; index < frameCount; index += 1) {
+              mono[index] += channel[index];
+            }
+          }
+
+          if (activeChannels > 1) {
+            for (let index = 0; index < frameCount; index += 1) {
+              mono[index] /= activeChannels;
+            }
+          }
+
+          if (output) {
+            for (let channelIndex = 0; channelIndex < output.length; channelIndex += 1) {
+              const outputChannel = output[channelIndex];
+              const sourceChannel = input[Math.min(channelIndex, input.length - 1)] || input[0];
+              outputChannel.set(sourceChannel || mono);
+            }
+          }
+
+          this.port.postMessage(mono, [mono.buffer]);
+          return true;
+        }
+      }
+
+      registerProcessor("${CAPTURE_WORKLET_NAME}", LocalScribeCaptureProcessor);
+    `;
+    const blob = new Blob([source], { type: "application/javascript" });
+    _captureWorkletModuleUrl = URL.createObjectURL(blob);
+  }
+
+  await audioContext.audioWorklet.addModule(_captureWorkletModuleUrl);
+}
+
+function attachLiveCaptureProcessor(processorNode, liveCapture) {
+  if ("port" in processorNode && processorNode.port) {
+    processorNode.port.onmessage = (event) => {
+      if (!(event.data instanceof Float32Array)) {
+        return;
+      }
+      handleLiveCaptureSamples(liveCapture, quietInputBoost(event.data));
+    };
+    return;
+  }
+
+  processorNode.onaudioprocess = (event) => {
+    handleLiveCaptureSamples(liveCapture, quietInputBoost(mixToMono(event.inputBuffer)));
+  };
+}
+
+function handleLiveCaptureSamples(liveCapture, monoSamples) {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  liveCapture.pendingBuffers.push(monoSamples);
+  liveCapture.pendingSamples += monoSamples.length;
+  if (liveCapture.pendingSamples >= liveCapture.targetSamplesPerChunk && !liveCapture.flushing) {
+    void flushPendingAudioChunk(liveCapture, false);
+  }
+}
+
 function calculateTargetSamples(sampleRate, chunkMillis) {
   return Math.max(4096, Math.round(sampleRate * chunkMillis / 1000));
 }
 
 function applyChunkMillisToLiveCapture(liveCapture, chunkMillis) {
-  liveCapture.targetSamplesPerChunk = calculateTargetSamples(liveCapture.audioContext.sampleRate, chunkMillis);
+  liveCapture.desiredChunkMillis = chunkMillis;
+  const effectiveChunkMillis = liveCapture.bootstrapMode
+    ? Math.min(chunkMillis, LIVE_BOOTSTRAP_CHUNK_MILLIS)
+    : chunkMillis;
+  liveCapture.targetSamplesPerChunk = calculateTargetSamples(liveCapture.audioContext.sampleRate, effectiveChunkMillis);
   if (
     !liveCapture.awaitingAck
     && liveCapture.pendingSamples >= liveCapture.targetSamplesPerChunk
@@ -2580,7 +2771,12 @@ async function stopAudioInput(liveCapture) {
   }
 
   liveCapture.inputStopped = true;
-  liveCapture.processorNode.onaudioprocess = null;
+  if ("port" in liveCapture.processorNode && liveCapture.processorNode.port) {
+    liveCapture.processorNode.port.onmessage = null;
+  }
+  if ("onaudioprocess" in liveCapture.processorNode) {
+    liveCapture.processorNode.onaudioprocess = null;
+  }
   liveCapture.sourceNode.disconnect();
   liveCapture.processorNode.disconnect();
   liveCapture.muteGain.disconnect();
@@ -2694,7 +2890,7 @@ async function flushPendingAudioChunk(liveCapture, force) {
           prompt: els.promptInput.value.trim() || null,
           diarize: els.diarizeToggle.checked,
           linkContext: ALWAYS_ENABLE_CONTEXT_LINKING,
-          postProcess: ALWAYS_ENABLE_POST_PROCESSING,
+          postProcess: shouldUsePostProcessingForLiveChunk(),
           postProcessBackend: selectedCleanupBackend(),
           postProcessModel: selectedCleanupModel(),
         }),
@@ -2717,6 +2913,10 @@ function handleLiveChunkProcessed() {
   }
 
   liveCapture.awaitingAck = false;
+  if (liveCapture.bootstrapMode && visibleLiveSegmentCount() > 0) {
+    liveCapture.bootstrapMode = false;
+    applyChunkMillisToLiveCapture(liveCapture, liveCapture.desiredChunkMillis || configuredChunkMillis());
+  }
   if (liveCapture.stopRequested) {
     if (liveCapture.pendingSamples > 0) {
       void flushPendingAudioChunk(liveCapture, true);

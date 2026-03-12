@@ -10,6 +10,7 @@ from localscribe.diarization.vad import SpeechWindow
 from localscribe.models import SpeakerProfile, TranscriptResult, TranscriptSegment
 from localscribe.engines.mock import MockEngine
 from localscribe.models import TranscriptionOptions
+from localscribe.postprocess.service import PostProcessingPlan
 from localscribe.storage import FileStore, SessionStore
 from localscribe.streaming import LiveChunkRequest, StreamingService
 
@@ -38,6 +39,23 @@ def _service(tmp_path: Path) -> tuple[StreamingService, _StubDiarizationService]
         file_store=FileStore(settings.uploads_dir),
         diarization_service=diarization_service,
         context_refinement_service=ContextRefinementService(enabled=False),
+    ), diarization_service
+
+
+def _service_with_postprocess(
+    tmp_path: Path,
+    post_processing_service,
+) -> tuple[StreamingService, _StubDiarizationService]:
+    settings = Settings(data_dir=tmp_path, chunk_millis=2200)
+    diarization_service = _StubDiarizationService()
+    return StreamingService(
+        settings=settings,
+        engine=MockEngine(settings),
+        session_store=SessionStore(settings.sessions_dir),
+        file_store=FileStore(settings.uploads_dir),
+        diarization_service=diarization_service,
+        context_refinement_service=ContextRefinementService(enabled=False),
+        post_processing_service=post_processing_service,
     ), diarization_service
 
 
@@ -210,6 +228,77 @@ def test_live_caption_finalizes_previous_turn_when_speaker_changes(tmp_path: Pat
     assert len(session.draft_segments) == 1
     assert session.draft_segments[0].speaker_id == "speaker-2"
     assert result.segments[-1].is_final is False
+
+
+def test_manually_edited_live_caption_locks_current_draft_and_continues_in_next_segment(tmp_path: Path) -> None:
+    service, diarization_service = _service(tmp_path)
+    service.engine = _SequenceEngine(["hello everyone", "thanks for joining"])
+    session = service.create_session()
+
+    diarization_service.speech_windows = [SpeechWindow(start=0.0, end=2.2)]
+    _, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=1,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False),
+        ),
+    )
+
+    edited_segment_id = session.draft_segments[0].segment_id
+    service.update_segment_text(session.session_id, edited_segment_id, "hello everyone, team")
+
+    diarization_service.speech_windows = [SpeechWindow(start=2.2, end=4.4)]
+    result, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=2,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False, offset_seconds=session.total_audio_seconds),
+        ),
+    )
+
+    assert len(session.segments) == 1
+    assert session.segments[0].text == "hello everyone, team"
+    assert session.segments[0].manually_edited is True
+    assert len(session.draft_segments) == 1
+    assert session.draft_segments[0].text == "thanks for joining"
+    assert StreamingService.MANUAL_DRAFT_LOCK_WARNING in result.warnings
+
+
+def test_live_post_processing_skips_draft_only_updates(tmp_path: Path) -> None:
+    class _CountingPostProcessingService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def prepare_backend(self, options):  # noqa: ANN001
+            return {}
+
+        def refine_live_result(self, session, result, options, *, replace_tail_count=0):  # noqa: ANN001
+            self.calls += 1
+            return PostProcessingPlan(result=result, replace_tail_count=replace_tail_count)
+
+    post_processing_service = _CountingPostProcessingService()
+    service, diarization_service = _service_with_postprocess(tmp_path, post_processing_service)
+    service.engine = _SequenceEngine(["hello everyone"])
+    session = service.create_session()
+
+    diarization_service.speech_windows = [SpeechWindow(start=0.0, end=2.2)]
+    result, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=1,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False, post_process=True),
+        ),
+    )
+
+    assert post_processing_service.calls == 0
+    assert result.segments[0].is_final is False
+    assert session.draft_segments
 
 
 def _wav_bytes(*, amplitude: float, frequency_hz: float = 440.0, sample_rate: int = 16000, duration_ms: int = 2200) -> bytes:

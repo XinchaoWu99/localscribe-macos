@@ -10,13 +10,13 @@ It runs in the browser on your own Mac, keeps speech recognition local, shows a 
 
 ## Release status
 
-Current release: `v0.2.2`
+Current release: `v0.2.3`
 
 LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is best treated as a serious local transcription workspace rather than a notarized consumer desktop app.
 
 ## What it does
 
-- Live microphone transcription in Safari
+- Live microphone transcription in Safari or Edge
 - Browser or shared-audio capture from the browser
 - Native macOS system-audio capture with a ScreenCaptureKit helper
 - Managed local WhisperKit server startup
@@ -45,7 +45,7 @@ source .venv/bin/activate
 LOCALSCRIBE_ENGINE=whisperkit LOCALSCRIBE_WHISPER_MODEL=tiny uv run localscribe --reload
 ```
 
-Then open `http://127.0.0.1:8765` in Safari.
+Then open `http://127.0.0.1:8765` in Safari or Edge.
 
 ## Install on a New macOS System
 
@@ -128,6 +128,8 @@ For Apple Silicon:
 
 ```bash
 LOCALSCRIBE_ENGINE=whisperkit LOCALSCRIBE_WHISPER_MODEL=tiny uv run localscribe --reload
+# if you want to use a different model, replace tiny with your desired model
+
 ```
 
 For Intel Macs:
@@ -142,7 +144,7 @@ If you want a custom app port:
 LOCALSCRIBE_PORT=9000 uv run localscribe --reload
 ```
 
-### 8. Open the app in Safari
+### 8. Open the app in Safari or Edge
 
 Open:
 
@@ -173,7 +175,7 @@ After the app is open, use the model panel to:
 
 ## First Run Workflow
 
-1. Open the page in Safari.
+1. Open the page in Safari or Edge.
 2. Choose `Live microphone` or `Browser or system audio`.
 3. Choose a scenario preset such as meeting, podcast, discussion, oral presentation, TV news, or interview.
 4. Adjust `Live segment length`.
@@ -189,16 +191,16 @@ For system output capture without browser limitations, use the helper in:
 
 - [Native system audio guide](docs/NATIVE_SYSTEM_AUDIO.md)
 
-### Optional local AI assistant with Ollama
+### Local AI assistant with Ollama
 
-If you want the default local AI assistant path:
+For the default local AI assistant path:
 
 ```bash
-brew services start ollama
+brew install ollama
 ollama pull qwen2.5:3b-instruct
 ```
 
-LocalScribe uses Ollama by default when it is available.
+LocalScribe uses Ollama by default when it is available and starts it automatically when the app launches.
 
 ### Optional local AI assistant with MLX
 
@@ -214,13 +216,13 @@ This is useful when you want an on-device assistant path without running Ollama.
 
 ## Troubleshooting
 
-### Safari shows no microphone devices
+### Safari or Edge shows no microphone devices
 
-Click `Refresh Devices`, then grant microphone permission when Safari asks.
+Click `Refresh Devices`, then grant microphone permission when the browser asks.
 
 ### Browser audio does not work reliably
 
-Safari is strongest for microphone capture, not tab audio. For system output capture:
+Safari and Edge both work well for microphone capture. Edge is a better fit for browser tab audio. For system output capture:
 
 - use a loopback device
 - or use the native ScreenCaptureKit helper
@@ -250,10 +252,10 @@ export LOCALSCRIBE_FASTER_WHISPER_MODEL=base
 
 ### The AI assistant shows as unavailable
 
-For Ollama:
+For Ollama, confirm it is installed and the default model is available:
 
 ```bash
-brew services start ollama
+brew install ollama
 ollama pull qwen2.5:3b-instruct
 ```
 
@@ -301,6 +303,12 @@ Run the E2E test suite:
 ```bash
 npm install
 npm run test:e2e
+```
+
+Run the dedicated Edge smoke test:
+
+```bash
+npm run test:e2e:edge
 ```
 
 Check the frontend script:

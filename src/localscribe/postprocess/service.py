@@ -286,6 +286,9 @@ class LocalPostProcessingService:
         backend_name, model = self._resolve_selection()
         return self._status_for_selection(backend_name, model)
 
+    def startup(self) -> dict[str, object]:
+        return self.prepare_backend()
+
     def prepare_backend(self, options: TranscriptionOptions | None = None) -> dict[str, object]:
         backend_name, model = self._resolve_selection(options)
         if backend_name == "ollama":

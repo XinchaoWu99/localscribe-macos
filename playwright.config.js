@@ -3,9 +3,40 @@ const path = require("node:path");
 const { defineConfig } = require("@playwright/test");
 
 const edgeExecutablePath = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
+const fakeMediaArgs = [
+  "--use-fake-ui-for-media-stream",
+  "--use-fake-device-for-media-stream",
+];
 const testHost = process.env.LOCALSCRIBE_TEST_HOST || "127.0.0.1";
 const testPort = Number.parseInt(process.env.LOCALSCRIBE_TEST_PORT || process.env.LOCALSCRIBE_PORT || "8770", 10);
 const baseURL = `http://${testHost}:${testPort}`;
+
+const projects = [
+  {
+    name: "chromium",
+    testIgnore: /edge-smoke\.spec\.js/,
+    use: {
+      browserName: "chromium",
+      launchOptions: {
+        args: fakeMediaArgs,
+      },
+    },
+  },
+];
+
+if (fs.existsSync(edgeExecutablePath)) {
+  projects.push({
+    name: "edge-smoke",
+    testMatch: /edge-smoke\.spec\.js/,
+    use: {
+      browserName: "chromium",
+      launchOptions: {
+        executablePath: edgeExecutablePath,
+        args: fakeMediaArgs,
+      },
+    },
+  });
+}
 
 module.exports = defineConfig({
   testDir: "./tests/e2e",
@@ -18,12 +49,10 @@ module.exports = defineConfig({
   reporter: [["list"]],
   use: {
     baseURL,
-    browserName: "chromium",
     headless: true,
-    launchOptions: fs.existsSync(edgeExecutablePath)
-      ? { executablePath: edgeExecutablePath }
-      : {},
+    permissions: ["microphone"],
   },
+  projects,
   webServer: {
     command: [
       "LOCALSCRIBE_ENGINE=mock",
@@ -38,6 +67,10 @@ module.exports = defineConfig({
       "-m",
       "uvicorn",
       "localscribe.main:app",
+      "--host",
+      testHost,
+      "--port",
+      String(testPort),
       "--app-dir",
       "src",
     ].join(" "),

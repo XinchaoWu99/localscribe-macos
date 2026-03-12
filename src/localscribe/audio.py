@@ -24,6 +24,12 @@ def require_ffmpeg() -> None:
 
 
 def normalize_audio(source: Path, destination: Path) -> None:
+    if _is_pcm16_mono_16khz_wav(source):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != destination.resolve():
+            shutil.copyfile(source, destination)
+        return
+
     require_ffmpeg()
     destination.parent.mkdir(parents=True, exist_ok=True)
     _run(
@@ -80,6 +86,10 @@ def apply_volume_gain(path: Path, gain_multiplier: float) -> None:
 
 
 def probe_duration_seconds(path: Path) -> float:
+    wav_duration = _probe_wav_duration_seconds(path)
+    if wav_duration is not None:
+        return wav_duration
+
     require_ffmpeg()
     completed = subprocess.run(
         [
@@ -102,6 +112,32 @@ def probe_duration_seconds(path: Path) -> float:
         return float(completed.stdout.strip())
     except ValueError:
         return 0.0
+
+
+def _probe_wav_duration_seconds(path: Path) -> float | None:
+    try:
+        with wave.open(str(path), "rb") as handle:
+            frame_rate = handle.getframerate()
+            frame_count = handle.getnframes()
+    except (wave.Error, FileNotFoundError, OSError):
+        return None
+
+    if frame_rate <= 0:
+        return 0.0
+    return frame_count / frame_rate
+
+
+def _is_pcm16_mono_16khz_wav(path: Path) -> bool:
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return (
+                handle.getnchannels() == 1
+                and handle.getframerate() == 16_000
+                and handle.getsampwidth() == 2
+                and handle.getcomptype() == "NONE"
+            )
+    except (wave.Error, FileNotFoundError, OSError):
+        return False
 
 
 def extract_clip(source: Path, destination: Path, start_seconds: float, end_seconds: float) -> None:

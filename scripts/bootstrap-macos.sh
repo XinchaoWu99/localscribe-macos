@@ -44,16 +44,15 @@ Next steps:
 2. Start the app:
    LOCALSCRIBE_ENGINE=whisperkit LOCALSCRIBE_WHISPER_MODEL=tiny uv run localscribe --reload
 
-3. Open Safari:
+3. Open Safari or Edge:
    http://127.0.0.1:8765
 
-Optional:
+Local AI assistant:
 
-- Install Ollama for the local AI assistant:
+- Install Ollama:
   brew install ollama
-- Start Ollama:
-  brew services start ollama
 - Pull the default assistant model:
   ollama pull qwen2.5:3b-instruct
+- LocalScribe starts Ollama automatically when the app launches.
 
 EOF
