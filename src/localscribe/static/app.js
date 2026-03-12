@@ -4,6 +4,7 @@ const state = {
   sessions: [],
   transcript: null,
   modelCatalog: null,
+  postProcessCatalog: null,
   socket: null,
   liveCapture: null,
   mediaStream: null,
@@ -15,19 +16,25 @@ const state = {
   modelActionPending: false,
   entryMode: "microphone",
   scenarioId: "meeting",
+  draftSessionId: null,
+  segmentDrafts: {},
+  segmentSaveTimers: {},
 };
+
+const ALWAYS_ENABLE_CONTEXT_LINKING = true;
+const ALWAYS_ENABLE_POST_PROCESSING = true;
 
 const ENTRY_PRESETS = {
   microphone: {
     label: "Live microphone",
     summary: "Best for room conversations, calls, interviews, and meetings happening right now.",
-    actionLabel: "Arm Live Session",
+    actionLabel: "Start Live Microphone",
     target: "live",
   },
   "browser-audio": {
     label: "Browser or system audio",
     summary: "Best for playback, livestreams, conference tabs, and other audio coming from the Mac.",
-    actionLabel: "Prepare Browser Audio Capture",
+    actionLabel: "Start Browser Audio",
     target: "live",
   },
 };
@@ -109,6 +116,8 @@ const els = {
   starterSpeakerHint: document.querySelector("#starterSpeakerHint"),
   starterFocusHint: document.querySelector("#starterFocusHint"),
   starterPromptPreview: document.querySelector("#starterPromptPreview"),
+  starterLaunchState: document.querySelector("#starterLaunchState"),
+  starterActionHint: document.querySelector("#starterActionHint"),
   entryModeButtons: [...document.querySelectorAll("[data-entry-mode]")],
   scenarioButtons: [...document.querySelectorAll("[data-scenario]")],
   sessionStatusText: document.querySelector("#sessionStatusText"),
@@ -127,14 +136,22 @@ const els = {
   modelDetail: document.querySelector("#modelDetail"),
   installModelButton: document.querySelector("#installModelButton"),
   switchModelButton: document.querySelector("#switchModelButton"),
+  modelInstallProgress: document.querySelector("#modelInstallProgress"),
+  modelInstallStatus: document.querySelector("#modelInstallStatus"),
+  modelInstallMeta: document.querySelector("#modelInstallMeta"),
+  modelInstallTrack: document.querySelector("#modelInstallTrack"),
+  modelInstallBar: document.querySelector("#modelInstallBar"),
+  modelInstallLog: document.querySelector("#modelInstallLog"),
   chunkMillis: document.querySelector("#chunkMillis"),
   chunkMillisValue: document.querySelector("#chunkMillisValue"),
   chunkMillisLiveHint: document.querySelector("#chunkMillisLiveHint"),
   languageInput: document.querySelector("#languageInput"),
   promptInput: document.querySelector("#promptInput"),
   diarizeToggle: document.querySelector("#diarizeToggle"),
-  contextLinkToggle: document.querySelector("#contextLinkToggle"),
-  postProcessToggle: document.querySelector("#postProcessToggle"),
+  cleanupBackendSelect: document.querySelector("#cleanupBackendSelect"),
+  cleanupModelInput: document.querySelector("#cleanupModelInput"),
+  cleanupModelSuggestions: document.querySelector("#cleanupModelSuggestions"),
+  cleanupHint: document.querySelector("#cleanupHint"),
   createSessionButton: document.querySelector("#createSessionButton"),
   startButton: document.querySelector("#startButton"),
   stopButton: document.querySelector("#stopButton"),
@@ -146,6 +163,7 @@ const els = {
   exportFormatSelect: document.querySelector("#exportFormatSelect"),
   downloadExportButton: document.querySelector("#downloadExportButton"),
   copyTranscriptButton: document.querySelector("#copyTranscriptButton"),
+  clearHistoryButton: document.querySelector("#clearHistoryButton"),
   sessionIdPill: document.querySelector("#sessionIdPill"),
   timelineLead: document.querySelector("#timelineLead"),
   rosterLead: document.querySelector("#rosterLead"),
@@ -159,20 +177,29 @@ const els = {
   timelineItemTemplate: document.querySelector("#timelineItemTemplate"),
   dialInCard: document.querySelector("#dialInCard"),
   liveWorkflowCard: document.querySelector("#liveWorkflowCard"),
+  transcriptStage: document.querySelector(".transcript-stage"),
 };
 
 async function boot() {
   bindEvents();
   await refreshStatus();
+  await refreshPostProcessCatalog();
   await refreshModelCatalog();
   await refreshSessionHistory();
-  await refreshAudioInputs(false);
   initializeStarter();
   renderTranscript();
+  await refreshAudioInputs(false);
+  window.setInterval(() => {
+    if (!isModelInstallRunning()) {
+      return;
+    }
+    void refreshModelCatalog(false);
+  }, 1200);
   window.setInterval(() => {
     if (state.liveCapture) {
       return;
     }
+    void refreshPostProcessCatalog(false);
     void refreshModelCatalog(false);
     void refreshSessionHistory();
     void refreshRemoteSession();
@@ -200,13 +227,16 @@ function bindEvents() {
     void handleStarterPrimaryAction();
   });
   els.starterSecondaryButton.addEventListener("click", () => {
-    focusDialInControls();
+    handleStarterSecondaryAction();
   });
   els.createSessionButton.addEventListener("click", createSession);
   els.startButton.addEventListener("click", startMic);
   els.stopButton.addEventListener("click", stopMic);
   els.downloadExportButton.addEventListener("click", downloadExport);
   els.copyTranscriptButton.addEventListener("click", copyTranscript);
+  els.clearHistoryButton.addEventListener("click", () => {
+    void clearLiveHistory();
+  });
   els.captureSource.addEventListener("change", () => {
     state.entryMode = els.captureSource.value;
     renderStarterPanel();
@@ -220,11 +250,14 @@ function bindEvents() {
   });
   els.modelSelect.addEventListener("change", renderModelControls);
   els.diarizeToggle.addEventListener("change", renderModelControls);
-  els.contextLinkToggle.addEventListener("change", () => {
+  els.cleanupBackendSelect.addEventListener("change", () => {
+    syncCleanupModelInput(false);
+    renderPostProcessControls();
     renderModelControls();
     updateSessionChrome();
   });
-  els.postProcessToggle.addEventListener("change", () => {
+  els.cleanupModelInput.addEventListener("input", () => {
+    renderPostProcessControls();
     renderModelControls();
     updateSessionChrome();
   });
@@ -234,7 +267,9 @@ function bindEvents() {
   els.switchModelButton.addEventListener("click", () => {
     void switchSelectedModel();
   });
-  els.refreshInputsButton.addEventListener("click", () => refreshAudioInputs(true));
+  els.refreshInputsButton.addEventListener("click", () => {
+    void refreshAudioInputs(true);
+  });
 }
 
 function initializeStarter() {
@@ -277,7 +312,6 @@ function applyScenarioPreset(scenarioId, { persist = true, scroll = false } = {}
   state.scenarioId = scenarioId;
   els.promptInput.value = preset.prompt;
   els.diarizeToggle.checked = preset.diarize;
-  els.contextLinkToggle.checked = preset.contextLink;
   els.chunkMillis.value = String(normalizeChunkMillis(preset.chunkMillis));
   renderStarterPanel();
   updateSessionChrome();
@@ -310,16 +344,64 @@ function renderStarterPanel() {
   els.starterFocusHint.textContent = scenarioPreset.focusHint;
   els.starterPromptPreview.textContent = scenarioPreset.prompt;
   els.starterPrimaryButton.textContent = entryPreset.actionLabel;
-  els.starterSecondaryButton.textContent = "Refine Live Setup";
-
+  renderStarterLaunchState();
   els.liveWorkflowCard.classList.add("is-guided");
 }
 
 async function handleStarterPrimaryAction() {
-  if (!state.session || state.session.sessionType === "upload") {
-    await createSession();
+  if (state.liveCapture) {
+    scrollToWorkflowCard(els.transcriptStage);
+    return;
   }
-  scrollToWorkflowCard(els.liveWorkflowCard);
+  await startMic();
+  if (state.liveCapture) {
+    scrollToWorkflowCard(els.transcriptStage);
+  }
+}
+
+function handleStarterSecondaryAction() {
+  if (state.liveCapture) {
+    scrollToWorkflowCard(els.transcriptStage);
+    return;
+  }
+  focusDialInControls();
+}
+
+function renderStarterLaunchState() {
+  const entryPreset = currentEntryPreset();
+  const sessionId = state.session?.sessionId;
+  const liveActive = Boolean(state.liveCapture);
+  const liveFinishing = Boolean(state.liveCapture?.stopRequested);
+  const captureLabel = entryPreset.label.toLowerCase();
+
+  if (liveFinishing) {
+    els.starterLaunchState.textContent = "Finishing";
+    els.starterActionHint.textContent =
+      "The last buffered live segment is still being processed. The transcript will settle in place when it completes.";
+    els.starterPrimaryButton.disabled = true;
+    els.starterSecondaryButton.textContent = "View Transcript Room";
+    return;
+  }
+
+  if (liveActive) {
+    els.starterLaunchState.textContent = "Recording live";
+    els.starterActionHint.textContent = `LocalScribe is already transcribing from ${captureLabel}. Stay here or jump straight to the transcript room.`;
+    els.starterPrimaryButton.disabled = true;
+    els.starterSecondaryButton.textContent = "View Transcript Room";
+    return;
+  }
+
+  els.starterPrimaryButton.disabled = false;
+  els.starterSecondaryButton.textContent = "Refine Live Setup";
+
+  if (sessionId) {
+    els.starterLaunchState.textContent = "Session ready";
+    els.starterActionHint.textContent = `Session ${sessionId.slice(0, 8)} is armed. Start from here and LocalScribe will immediately open ${captureLabel}.`;
+    return;
+  }
+
+  els.starterLaunchState.textContent = "Ready to start";
+  els.starterActionHint.textContent = `Start from here and LocalScribe will create a live session, request permission, and begin transcription from ${captureLabel}.`;
 }
 
 function focusDialInControls() {
@@ -347,18 +429,129 @@ async function refreshStatus() {
   els.chunkMillis.max = String(currentChunkMillisBounds().max);
   els.chunkMillis.value = String(state.status.settings.chunkMillis);
   renderChunkMillisControls();
-  if (!els.contextLinkToggle.dataset.hydrated) {
-    els.contextLinkToggle.checked = Boolean(state.status.contextRefinement?.enabled);
-    els.contextLinkToggle.dataset.hydrated = "1";
-  }
-  if (!els.postProcessToggle.dataset.hydrated) {
-    els.postProcessToggle.checked = Boolean(state.status.postProcessing?.defaultEnabled);
-    els.postProcessToggle.dataset.hydrated = "1";
-  }
+  renderPostProcessControls();
   renderModelControls();
   renderStarterPanel();
   updateSessionChrome();
   updateCaptureUi();
+}
+
+async function refreshPostProcessCatalog(showErrors = false) {
+  try {
+    const response = await fetch("/api/postprocess/catalog");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not load local cleanup engines.");
+    }
+    state.postProcessCatalog = data;
+    syncCleanupBackendSelect();
+    syncCleanupModelInput(true);
+    renderPostProcessControls();
+    renderModelControls();
+  } catch (error) {
+    if (showErrors) {
+      window.alert(error.message || "Could not load local cleanup engines.");
+    }
+  }
+}
+
+function syncCleanupBackendSelect() {
+  const catalog = state.postProcessCatalog;
+  if (!catalog) {
+    return;
+  }
+
+  const selectedValue = els.cleanupBackendSelect.value;
+  els.cleanupBackendSelect.replaceChildren();
+  const backends = (catalog.backends || []).filter((backend) => backend.id !== "none");
+  backends.forEach((backend) => {
+    els.cleanupBackendSelect.append(new Option(backend.label, backend.id));
+  });
+
+  const preferredValue = backends.some((backend) => backend.id === selectedValue)
+    ? selectedValue
+    : backends.some((backend) => backend.id === catalog.defaultBackend && catalog.defaultBackend !== "none")
+      ? catalog.defaultBackend
+      : recommendedCleanupBackendId(backends);
+  els.cleanupBackendSelect.value = preferredValue;
+}
+
+function syncCleanupModelInput(preserveCurrentValue) {
+  const backend = selectedCleanupBackendOption();
+  const suggestions = backend?.suggestedModels || [];
+  els.cleanupModelSuggestions.replaceChildren();
+  suggestions.forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model;
+    els.cleanupModelSuggestions.append(option);
+  });
+
+  const currentValue = els.cleanupModelInput.value.trim();
+  if (!preserveCurrentValue || !currentValue) {
+    els.cleanupModelInput.value = backend?.defaultModel || "";
+  }
+  els.cleanupModelInput.placeholder = backend?.modelPlaceholder || "No model needed";
+}
+
+function selectedCleanupBackend() {
+  return els.cleanupBackendSelect.value || state.postProcessCatalog?.defaultBackend || recommendedCleanupBackendId();
+}
+
+function selectedCleanupBackendOption() {
+  const backends = state.postProcessCatalog?.backends || [];
+  return backends.find((backend) => backend.id === selectedCleanupBackend()) || null;
+}
+
+function selectedCleanupModel() {
+  const customValue = els.cleanupModelInput.value.trim();
+  if (customValue) {
+    return customValue;
+  }
+  return selectedCleanupBackendOption()?.defaultModel || defaultCleanupModelForBackend(selectedCleanupBackend());
+}
+
+function recommendedCleanupBackendId(backends = state.postProcessCatalog?.backends || []) {
+  const enabledBackends = backends.filter((backend) => backend.id !== "none");
+  return enabledBackends.find((backend) => backend.id === "ollama" && backend.ready)?.id
+    || enabledBackends.find((backend) => backend.id === "mlx" && backend.ready)?.id
+    || enabledBackends.find((backend) => backend.id === "ollama")?.id
+    || enabledBackends.find((backend) => backend.id === "mlx")?.id
+    || enabledBackends[0]?.id
+    || "ollama";
+}
+
+function defaultCleanupModelForBackend(backendId) {
+  if (backendId === "mlx") {
+    return "mlx-community/Qwen2.5-3B-Instruct-4bit";
+  }
+  return "qwen2.5:3b-instruct";
+}
+
+function renderPostProcessControls() {
+  const catalog = state.postProcessCatalog;
+  const backend = selectedCleanupBackendOption();
+  const backendName = backend?.label || "Local cleanup";
+  const modelName = selectedCleanupModel();
+
+  if (!catalog) {
+    els.cleanupBackendSelect.disabled = true;
+    els.cleanupModelInput.disabled = true;
+    els.cleanupHint.textContent = "Checking which local cleanup engines are available on this Mac.";
+    return;
+  }
+
+  els.cleanupBackendSelect.disabled = false;
+  els.cleanupModelInput.disabled = false;
+
+  if (backend?.ready) {
+    els.cleanupHint.textContent = modelName
+      ? `${backendName} is ready. New chunks will use ${modelName} for cleanup.`
+      : `${backendName} is ready for the next live chunks.`;
+    return;
+  }
+
+  const warning = backend?.warning ? ` ${backend.warning}` : "";
+  els.cleanupHint.textContent = `${backendName} is not ready yet.${warning || ` ${backend?.description || ""}`}`.trim();
 }
 
 async function refreshModelCatalog(showErrors = false) {
@@ -394,6 +587,7 @@ function syncModelSelection() {
   }
 
   const models = catalog.models || [];
+  const recommendedModel = models.find((model) => model.recommended) || null;
   models.forEach((model) => {
     const suffix = model.installed ? "Installed" : "Download required";
     const option = new Option(`${model.label} · ${suffix}`, model.id);
@@ -401,9 +595,12 @@ function syncModelSelection() {
   });
 
   els.modelSelect.disabled = false;
+  const activeModelId = catalog.activeModel || "";
   const preferredValue = models.some((model) => model.id === selectedValue)
     ? selectedValue
-    : catalog.activeModel || models[0]?.id || "";
+    : models.some((model) => model.id === activeModelId)
+      ? activeModelId
+      : recommendedModel?.id || models[0]?.id || "";
   els.modelSelect.value = preferredValue;
 }
 
@@ -425,6 +622,7 @@ function renderModelControls() {
     els.modelHeadline.textContent = "Loading Whisper model…";
     renderModelMetrics([]);
     renderFeatureStrip([]);
+    renderModelInstallProgress(null);
     els.installModelButton.disabled = true;
     els.switchModelButton.disabled = true;
     return;
@@ -442,6 +640,7 @@ function renderModelControls() {
         tone: "warm",
       },
     ]);
+    renderModelInstallProgress(null);
     els.installModelButton.disabled = true;
     els.switchModelButton.disabled = true;
     return;
@@ -451,6 +650,7 @@ function renderModelControls() {
   const installingModelId = catalog.installingModel || install?.model || null;
   const activeModel = catalog.models?.find((entry) => entry.active) || null;
   const installRunning = Boolean(install?.running);
+  renderModelInstallProgress(install);
 
   if (installRunning) {
     els.modelPill.textContent = "Installing";
@@ -471,6 +671,9 @@ function renderModelControls() {
     detail = `${model.speedHint} · ${model.qualityHint} · ${model.sizeHint}. ${model.description}`;
     if (!model.installed) {
       detail += " Install it first, then switch when you are ready.";
+      if (model.recommended) {
+        detail += " This is the default LocalScribe model for a fresh WhisperKit setup.";
+      }
     } else if (!model.active && state.liveCapture) {
       detail += " Switching during a live session keeps recording open and applies to the next processed chunks.";
     }
@@ -494,12 +697,54 @@ function renderModelControls() {
     return;
   }
 
-  els.installModelButton.textContent = model?.installed ? "Installed" : "Install Model";
+  els.installModelButton.textContent = model?.installed
+    ? "Installed"
+    : model?.recommended
+      ? "Install Recommended Model"
+      : "Install Model";
   els.switchModelButton.textContent = model?.active ? "Using This Model" : "Use Model";
 
   if (activeModel && !installRunning && model && model.id !== activeModel.id) {
     els.modelSummary.textContent += ` Active now: ${activeModel.label}.`;
   }
+}
+
+function renderModelInstallProgress(install) {
+  const show = Boolean(install?.running || install?.warning || (install?.logTail && install.logTail.length));
+  els.modelInstallProgress.hidden = !show;
+  if (!show) {
+    els.modelInstallTrack.classList.remove("is-indeterminate");
+    els.modelInstallBar.style.width = "0%";
+    els.modelInstallStatus.textContent = "Starting model download…";
+    els.modelInstallMeta.textContent = "Preparing LocalScribe-managed storage.";
+    els.modelInstallLog.textContent = "";
+    return;
+  }
+
+  const progressPercent = Number.isFinite(Number(install?.progressPercent))
+    ? Math.max(0, Math.min(100, Math.round(Number(install.progressPercent))))
+    : null;
+  const progressLabel = install?.progressLabel || install?.warning || "Downloading model files…";
+  const logTail = Array.isArray(install?.logTail) ? install.logTail : [];
+
+  els.modelInstallStatus.textContent = progressLabel;
+  if (install?.warning) {
+    els.modelInstallMeta.textContent = "Install failed. Review the recent installer output below.";
+  } else if (progressPercent !== null) {
+    els.modelInstallMeta.textContent = `${progressPercent}% downloaded`;
+  } else if (install?.running) {
+    els.modelInstallMeta.textContent = "Download in progress. Progress will update as WhisperKit reports it.";
+  } else {
+    els.modelInstallMeta.textContent = "Installer finished.";
+  }
+
+  els.modelInstallTrack.classList.toggle("is-indeterminate", progressPercent === null && Boolean(install?.running));
+  els.modelInstallBar.style.width = progressPercent !== null ? `${progressPercent}%` : "36%";
+  els.modelInstallLog.textContent = logTail.length > 0 ? logTail.join("\n") : "Installer output will appear here.";
+}
+
+function isModelInstallRunning() {
+  return Boolean(state.modelCatalog?.install?.running);
 }
 
 function buildModelMetrics(model) {
@@ -539,25 +784,22 @@ function buildModelFeatures(model) {
     tone: els.diarizeToggle.checked && state.status?.speakerRecognition?.ready ? "good" : "neutral",
   });
   featureItems.push({
-    label: els.contextLinkToggle.checked ? "Context linking on" : "Context linking off",
-    tone: els.contextLinkToggle.checked ? "good" : "neutral",
+    label: "Context linking on",
+    tone: "good",
   });
   featureItems.push({
     label: postProcessingLabel(),
-    tone: els.postProcessToggle.checked && state.status?.postProcessing?.ready ? "good" : "neutral",
+    tone: selectedCleanupBackendOption()?.ready ? "good" : "neutral",
   });
   return featureItems;
 }
 
 function postProcessingLabel() {
-  if (!els.postProcessToggle.checked) {
-    return "Local cleanup off";
+  const backend = selectedCleanupBackendOption();
+  if (backend?.ready) {
+    return `Local cleanup on (${backend.label})`;
   }
-  const backend = state.status?.postProcessing?.backend || "local LLM";
-  if (state.status?.postProcessing?.ready) {
-    return `Local cleanup on (${backend})`;
-  }
-  return `Local cleanup unavailable (${backend})`;
+  return `Local cleanup pending (${backend?.label || selectedCleanupBackend()})`;
 }
 
 function realtimeLabelForModel(model) {
@@ -657,6 +899,7 @@ async function switchSelectedModel() {
 }
 
 async function createSession() {
+  await flushPendingSegmentTextSaves();
   const response = await fetch("/api/sessions", { method: "POST" });
   const data = await response.json();
   state.session = data.session;
@@ -781,7 +1024,8 @@ async function connectSocket() {
 }
 
 async function copyTranscript() {
-  const text = state.transcript?.text || "";
+  await flushPendingSegmentTextSaves();
+  const text = composeTranscriptText(state.transcript?.segments || []);
   if (!text) {
     return;
   }
@@ -805,6 +1049,7 @@ async function downloadExport() {
     return;
   }
 
+  await flushPendingSegmentTextSaves();
   const format = els.exportFormatSelect.value;
   await downloadSessionExport(sessionId, format);
 }
@@ -842,6 +1087,7 @@ async function refreshSessionHistory() {
 }
 
 async function openSession(sessionId) {
+  await flushPendingSegmentTextSaves();
   const response = await fetch(`/api/sessions/${sessionId}`);
   const data = await response.json();
   if (!response.ok) {
@@ -874,13 +1120,150 @@ async function refreshRemoteSession() {
   renderTranscript();
 }
 
-function setTranscriptFromSession() {
-  if (!state.session) {
+function composeTranscriptText(segments) {
+  return (segments || []).map((segment) => currentSegmentText(segment)).filter(Boolean).join("\n");
+}
+
+function currentSegmentText(segment) {
+  return state.segmentDrafts[segment.segmentId] ?? segment.text ?? "";
+}
+
+function updateTranscriptTextFromDrafts() {
+  if (!state.transcript) {
     return;
   }
+  state.transcript.text = composeTranscriptText(state.transcript.segments || []);
+  updateSessionChrome();
+}
+
+function clearSegmentSaveTimers() {
+  Object.values(state.segmentSaveTimers).forEach((timer) => {
+    window.clearTimeout(timer);
+  });
+  state.segmentSaveTimers = {};
+}
+
+async function flushPendingSegmentTextSaves() {
+  const pendingEntries = Object.entries(state.segmentSaveTimers);
+  if (pendingEntries.length === 0) {
+    return;
+  }
+
+  pendingEntries.forEach(([, timer]) => {
+    window.clearTimeout(timer);
+  });
+  state.segmentSaveTimers = {};
+
+  const drafts = Object.entries(state.segmentDrafts);
+  for (const [segmentId, draftText] of drafts) {
+    const currentSegment = (state.session?.segments || []).find((segment) => segment.segmentId === segmentId);
+    if (!currentSegment || currentSegment.text === draftText.trim()) {
+      delete state.segmentDrafts[segmentId];
+      continue;
+    }
+    await saveSegmentText(segmentId, draftText);
+  }
+}
+
+function queueSegmentTextSave(segmentId, text) {
+  if (state.segmentSaveTimers[segmentId]) {
+    window.clearTimeout(state.segmentSaveTimers[segmentId]);
+  }
+  state.segmentSaveTimers[segmentId] = window.setTimeout(() => {
+    delete state.segmentSaveTimers[segmentId];
+    void saveSegmentText(segmentId, text);
+  }, 450);
+}
+
+async function saveSegmentText(segmentId, text) {
+  const sessionId = state.session?.sessionId;
+  const normalized = (text || "").trim();
+  if (!sessionId) {
+    return;
+  }
+  if (!normalized) {
+    delete state.segmentDrafts[segmentId];
+    updateTranscriptTextFromDrafts();
+    renderTranscript();
+    return;
+  }
+
+  const currentSegment = (state.session?.segments || []).find((segment) => segment.segmentId === segmentId);
+  if (currentSegment && currentSegment.text === normalized) {
+    delete state.segmentDrafts[segmentId];
+    updateTranscriptTextFromDrafts();
+    return;
+  }
+
+  const response = await fetch(`/api/sessions/${sessionId}/segments/${segmentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: normalized }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    window.alert(data.detail || "Could not save the edited transcript segment.");
+    return;
+  }
+
+  delete state.segmentDrafts[segmentId];
+  state.session = data.session;
+  setTranscriptFromSession();
+  updateSessionChrome();
+  renderTranscript();
+}
+
+function captureFocusedSegmentEditor() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLTextAreaElement) || !active.classList.contains("segment-editor")) {
+    return null;
+  }
+  const segmentNode = active.closest(".segment");
+  const segmentId = segmentNode?.dataset.segmentId;
+  if (!segmentId) {
+    return null;
+  }
+  return {
+    segmentId,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restoreFocusedSegmentEditor(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  const editor = document.querySelector(`#segment-${CSS.escape(snapshot.segmentId)} .segment-editor`);
+  if (!(editor instanceof HTMLTextAreaElement)) {
+    return;
+  }
+  editor.focus({ preventScroll: true });
+  editor.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+}
+
+function autosizeTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(textarea.scrollHeight, 72)}px`;
+}
+
+function setTranscriptFromSession() {
+  if (!state.session) {
+    state.transcript = null;
+    state.draftSessionId = null;
+    clearSegmentSaveTimers();
+    state.segmentDrafts = {};
+    return;
+  }
+  if (state.draftSessionId !== state.session.sessionId) {
+    clearSegmentSaveTimers();
+    state.segmentDrafts = {};
+    state.draftSessionId = state.session.sessionId;
+  }
+  const segments = state.session.segments || [];
   state.transcript = {
-    text: state.session.text,
-    segments: state.session.segments,
+    text: composeTranscriptText(segments),
+    segments,
     speakers: state.session.speakers,
     durationSeconds: state.session.totalAudioSeconds,
     warnings: state.session.warnings,
@@ -892,6 +1275,7 @@ function renderTranscript() {
   const segments = transcript?.segments || [];
   const speakers = transcript?.speakers || [];
   const warnings = transcript?.warnings || [];
+  const focusedEditor = captureFocusedSegmentEditor();
 
   els.modeValue.textContent = state.mode;
   els.durationValue.textContent = formatDuration(transcript?.durationSeconds || 0);
@@ -910,8 +1294,8 @@ function renderTranscript() {
       : "Each detected speaker change is listed here so you can jump through the conversation.";
   els.timelineHint.textContent =
     segments.length > 0
-      ? "Segments are listed in time order. Copy the full transcript when you are ready to move it elsewhere."
-      : "Start a live session to populate the timeline.";
+      ? "Edit any segment inline. Your changes are saved back to the live session while new chunks continue to arrive."
+      : "Start a live session to populate the live editor.";
 
   els.warnings.replaceChildren();
   warnings.forEach((warning) => {
@@ -967,28 +1351,48 @@ function renderTranscript() {
     const node = document.createElement("div");
     node.className = "empty-state";
     node.innerHTML =
-      "<strong>No transcript yet</strong><p>Use the live capture controls to start streaming audio into the local transcription pipeline.</p>";
+      "<strong>No transcript yet</strong><p>Use the live capture controls to start streaming audio into the local transcription pipeline. When segments arrive, you can edit them here live.</p>";
     els.timeline.append(node);
+    renderSessionHistory();
     return;
   }
 
   segments.forEach((segment) => {
     const fragment = els.timelineItemTemplate.content.cloneNode(true);
     const article = fragment.querySelector(".segment");
+    const editor = fragment.querySelector(".segment-editor");
     article.dataset.segmentId = segment.segmentId;
     article.id = `segment-${segment.segmentId}`;
     article.querySelector(".segment-speaker").textContent = segment.speakerName || "Unassigned";
     article.querySelector(".segment-time").textContent = `${formatClock(segment.start)} - ${formatClock(segment.end)}`;
-    article.querySelector(".segment-text").textContent = segment.text;
+    editor.value = currentSegmentText(segment);
+    editor.addEventListener("input", () => {
+      state.segmentDrafts[segment.segmentId] = editor.value;
+      autosizeTextarea(editor);
+      queueSegmentTextSave(segment.segmentId, editor.value);
+      updateTranscriptTextFromDrafts();
+    });
+    editor.addEventListener("blur", () => {
+      void saveSegmentText(segment.segmentId, editor.value);
+    });
+    editor.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        void saveSegmentText(segment.segmentId, editor.value);
+      }
+    });
+    autosizeTextarea(editor);
     els.timeline.append(article);
   });
 
+  restoreFocusedSegmentEditor(focusedEditor);
   renderSessionHistory();
 }
 
 function renderSessionHistory() {
   const sessions = (state.sessions || []).filter((session) => session.sessionType !== "upload");
   els.sessionHistory.replaceChildren();
+  els.clearHistoryButton.disabled = sessions.length === 0;
 
   if (sessions.length === 0) {
     const node = document.createElement("div");
@@ -1005,19 +1409,39 @@ function renderSessionHistory() {
       article.classList.add("is-active");
     }
 
-    const title = escapeHtml(session.title || "Live session");
     const typeLabel = "Live";
     article.innerHTML = `
       <div class="session-card-copy">
-        <strong>${title}</strong>
+        <input
+          class="session-title-input"
+          type="text"
+          value="${escapeHtmlAttribute(session.title || "")}"
+          placeholder="Name this live session"
+          aria-label="Session title"
+        />
         <span>${typeLabel} · ${formatDuration(session.totalAudioSeconds || 0)} · ${session.segmentCount || 0} segments</span>
       </div>
       <div class="session-card-actions">
+        <button type="button" class="ghost session-save-title">Save Name</button>
         <button type="button" class="secondary session-open">Open</button>
         <button type="button" class="ghost session-export">SRT</button>
       </div>
     `;
 
+    const titleInput = article.querySelector(".session-title-input");
+    const saveButton = article.querySelector(".session-save-title");
+    saveButton.addEventListener("click", () => {
+      void renameSession(session.sessionId, titleInput.value);
+    });
+    titleInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void renameSession(session.sessionId, titleInput.value);
+      }
+    });
+    titleInput.addEventListener("blur", () => {
+      void renameSession(session.sessionId, titleInput.value);
+    });
     article.querySelector(".session-open").addEventListener("click", () => {
       void openSession(session.sessionId);
     });
@@ -1029,8 +1453,36 @@ function renderSessionHistory() {
 }
 
 async function quickExport(sessionId, format) {
+  await flushPendingSegmentTextSaves();
   els.exportFormatSelect.value = format;
   await downloadSessionExport(sessionId, format);
+}
+
+async function renameSession(sessionId, title) {
+  const normalized = (title || "").trim();
+  const currentSession = state.sessions.find((session) => session.sessionId === sessionId);
+  if ((currentSession?.title || "") === normalized) {
+    return;
+  }
+
+  const response = await fetch(`/api/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: normalized || null }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    window.alert(data.detail || "Could not rename the session.");
+    return;
+  }
+
+  if (state.session?.sessionId === sessionId) {
+    state.session = data.session;
+    setTranscriptFromSession();
+    updateSessionChrome();
+  }
+  await refreshSessionHistory();
+  renderTranscript();
 }
 
 async function renameSpeaker(speakerId, label) {
@@ -1063,6 +1515,37 @@ async function renameSpeaker(speakerId, label) {
   renderTranscript();
 }
 
+async function clearLiveHistory() {
+  if (state.liveCapture) {
+    if (!window.confirm("Clear saved live history and keep the live session that is recording right now?")) {
+      return;
+    }
+  } else if (!window.confirm("Delete all saved live sessions from LocalScribe history?")) {
+    return;
+  }
+
+  const params = new URLSearchParams({ sessionType: "live" });
+  if (state.liveCapture && state.session?.sessionId) {
+    params.set("excludeSessionId", state.session.sessionId);
+  }
+  const response = await fetch(`/api/sessions?${params.toString()}`, { method: "DELETE" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    window.alert(data.detail || "Could not clear live session history.");
+    return;
+  }
+
+  if (!state.liveCapture && state.session?.sessionType === "live") {
+    state.session = null;
+    setTranscriptFromSession();
+    state.mode = "Waiting";
+    updateSessionChrome();
+  }
+
+  await refreshSessionHistory();
+  renderTranscript();
+}
+
 function buildSpeakerMarkers(segments) {
   const markers = [];
   let previousSpeakerId = null;
@@ -1075,7 +1558,7 @@ function buildSpeakerMarkers(segments) {
       segmentId: segment.segmentId,
       speakerName: segment.speakerName || "Unassigned",
       start: segment.start,
-      text: segment.text,
+      text: currentSegmentText(segment),
     });
     previousSpeakerId = currentSpeakerId;
   });
@@ -1153,10 +1636,11 @@ function updateSessionChrome() {
   }
 
   els.helperNote.textContent = liveActive
-    ? `Audio is flowing. Live segment length is ${formatChunkMillis(configuredChunkMillis())} and changes apply without restarting.${els.postProcessToggle.checked ? " Local cleanup is active for new chunks when the backend is ready." : ""}`
+    ? `Audio is flowing. Live segment length is ${formatChunkMillis(configuredChunkMillis())} and changes apply without restarting.${cleanupSessionNote()}`
     : captureHelperText();
   els.downloadExportButton.disabled = !sessionId;
-  els.copyTranscriptButton.disabled = !(state.transcript?.text || "");
+  els.copyTranscriptButton.disabled = !composeTranscriptText(state.transcript?.segments || []);
+  renderStarterLaunchState();
 }
 
 function updateCaptureUi() {
@@ -1294,28 +1778,33 @@ async function refreshAudioInputs(requestPermission) {
     return;
   }
 
-  if (requestPermission) {
-    try {
+  try {
+    if (requestPermission) {
       const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       permissionStream.getTracks().forEach((track) => track.stop());
-    } catch (error) {
-      window.alert("Microphone permission is required to list audio inputs with labels.");
     }
-  }
 
-  const previousValue = els.audioInputSelect.value;
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const inputs = devices.filter((device) => device.kind === "audioinput");
+    const previousValue = els.audioInputSelect.value;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === "audioinput");
 
-  els.audioInputSelect.replaceChildren();
-  els.audioInputSelect.append(new Option("Default microphone", ""));
-  inputs.forEach((device, index) => {
-    const label = device.label || `Microphone ${index + 1}`;
-    els.audioInputSelect.append(new Option(label, device.deviceId));
-  });
+    els.audioInputSelect.replaceChildren();
+    els.audioInputSelect.append(new Option("Default microphone", ""));
+    inputs.forEach((device, index) => {
+      const label = device.label || `Microphone ${index + 1}`;
+      els.audioInputSelect.append(new Option(label, device.deviceId));
+    });
 
-  if ([...els.audioInputSelect.options].some((option) => option.value === previousValue)) {
-    els.audioInputSelect.value = previousValue;
+    if ([...els.audioInputSelect.options].some((option) => option.value === previousValue)) {
+      els.audioInputSelect.value = previousValue;
+    }
+  } catch (error) {
+    console.warn("Could not refresh audio inputs.", error);
+    els.audioInputSelect.replaceChildren();
+    els.audioInputSelect.append(new Option("Default microphone", ""));
+    if (requestPermission) {
+      window.alert("Could not refresh microphone devices. You can still use the default microphone and start live capture.");
+    }
   }
 }
 
@@ -1354,14 +1843,25 @@ function captureHelperText() {
   if (els.captureSource.value === "browser-audio") {
     return "Browser or screen audio capture depends on browser support. Safari is best for microphone mode; Chromium browsers are better for tab audio.";
   }
-  return `Choose a microphone input and stream ${formatChunkMillis(configuredChunkMillis())} chunks for live transcription with the ${currentScenarioPreset().title.toLowerCase()} preset.${els.postProcessToggle.checked ? " Local cleanup will run after each chunk when the configured backend is available." : ""}`;
+  return `Choose a microphone input and stream ${formatChunkMillis(configuredChunkMillis())} chunks for live transcription with the ${currentScenarioPreset().title.toLowerCase()} preset.${cleanupSessionNote()}`;
+}
+
+function cleanupSessionNote() {
+  const backend = selectedCleanupBackendOption();
+  const model = selectedCleanupModel();
+  if (backend?.ready) {
+    return model
+      ? ` Local cleanup will use ${backend.label} with ${model} for the next chunks.`
+      : ` Local cleanup will use ${backend.label} for the next chunks.`;
+  }
+  return ` Local cleanup is turned on, but ${backend?.label || "the selected engine"} is not ready yet.`;
 }
 
 function buildTimelineLead(segmentCount) {
   if (segmentCount > 0) {
-    return "Live conversation segments are arriving in sequence and can be copied out at any point.";
+    return "Live conversation segments are arriving in sequence, and you can correct each one inline while the session continues.";
   }
-  return "Start a live session to populate the transcript timeline.";
+  return "Start a live session to populate the live segment editor.";
 }
 
 async function startLiveAudioCapture(stream) {
@@ -1533,8 +2033,10 @@ async function flushPendingAudioChunk(liveCapture, force) {
           language: els.languageInput.value.trim() || null,
           prompt: els.promptInput.value.trim() || null,
           diarize: els.diarizeToggle.checked,
-          linkContext: els.contextLinkToggle.checked,
-          postProcess: els.postProcessToggle.checked,
+          linkContext: ALWAYS_ENABLE_CONTEXT_LINKING,
+          postProcess: ALWAYS_ENABLE_POST_PROCESSING,
+          postProcessBackend: selectedCleanupBackend(),
+          postProcessModel: selectedCleanupModel(),
         }),
       );
     } catch (error) {

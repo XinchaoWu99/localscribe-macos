@@ -30,6 +30,10 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
             "settings": services.streaming_service.status(),
         }
 
+    @app.get("/api/postprocess/catalog")
+    async def postprocess_catalog() -> dict[str, object]:
+        return services.post_processing_service.catalog()
+
     @app.patch("/api/settings/live")
     async def update_live_settings(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, object]:
         raw_chunk_millis = None if payload is None else payload.get("chunkMillis")
@@ -90,6 +94,30 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
         session = _get_session_or_404(services, session_id)
         return {"session": session.to_payload()}
 
+    @app.patch("/api/sessions/{session_id}")
+    async def update_session(
+        session_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+    ) -> dict[str, object]:
+        title = None if payload is None else _clean(payload.get("title"))
+        try:
+            session = await _to_thread(services.streaming_service.rename_session, session_id, title)
+            return {"session": session.to_payload()}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete("/api/sessions")
+    async def clear_sessions(
+        session_type: str | None = Query(default=None, alias="sessionType"),
+        exclude_session_id: str | None = Query(default=None, alias="excludeSessionId"),
+    ) -> dict[str, object]:
+        deleted = await _to_thread(
+            services.streaming_service.clear_sessions,
+            session_type=session_type,
+            exclude_session_id=exclude_session_id,
+        )
+        return {"deleted": deleted}
+
     @app.get("/api/sessions/{session_id}/export")
     async def export_session(
         session_id: str,
@@ -114,7 +142,9 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
         language: str | None = Form(default=None),
         diarize: str = Form(default="true"),
         link_context: str = Form(default="true"),
-        post_process: str = Form(default="false"),
+        post_process: str = Form(default="true"),
+        post_process_backend: str | None = Form(default=None),
+        post_process_model: str | None = Form(default=None),
         prompt: str | None = Form(default=None),
     ) -> dict[str, object]:
         try:
@@ -126,8 +156,10 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
                     language=_clean(language),
                     diarize=_parse_bool(diarize, default=True),
                     prompt=_clean(prompt),
-                    link_context=_parse_bool(link_context, default=True),
-                    post_process=_parse_bool(post_process, default=False),
+                    link_context=True,
+                    post_process=True,
+                    post_process_backend=_clean(post_process_backend),
+                    post_process_model=_clean(post_process_model),
                     live=False,
                 ),
             )
@@ -189,6 +221,24 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.patch("/api/sessions/{session_id}/segments/{segment_id}")
+    async def update_segment_text(
+        session_id: str,
+        segment_id: str,
+        payload: dict[str, Any] | None = Body(default=None),
+    ) -> dict[str, object]:
+        text = "" if payload is None else str(payload.get("text", ""))
+        try:
+            segment, session = await _to_thread(services.streaming_service.update_segment_text, session_id, segment_id, text)
+            return {
+                "segment": segment.to_payload(),
+                "session": session.to_payload(),
+            }
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.websocket("/ws/live/{session_id}")
     async def live_socket(websocket: WebSocket, session_id: str) -> None:
         session = _get_session_or_404(services, session_id)
@@ -227,8 +277,10 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
                             language=_clean(payload.get("language")),
                             diarize=_parse_bool(payload.get("diarize"), default=True),
                             prompt=_clean(payload.get("prompt")),
-                            link_context=_parse_bool(payload.get("linkContext"), default=True),
-                            post_process=_parse_bool(payload.get("postProcess"), default=False),
+                            link_context=True,
+                            post_process=True,
+                            post_process_backend=_clean(payload.get("postProcessBackend")),
+                            post_process_model=_clean(payload.get("postProcessModel")),
                             live=True,
                             offset_seconds=session.total_audio_seconds,
                         ),
@@ -249,10 +301,10 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
             return
 
 
-async def _to_thread(func, *args):
+async def _to_thread(func, *args, **kwargs):
     import asyncio
 
-    return await asyncio.to_thread(func, *args)
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 def _get_session_or_404(services: AppServices, session_id: str):

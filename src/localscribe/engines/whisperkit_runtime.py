@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -13,7 +14,13 @@ from urllib.parse import urlparse
 import httpx
 
 from ..config import Settings
-from .whisperkit_models import WHISPERKIT_MODELS, whisperkit_model_spec
+from .whisperkit_models import WHISPERKIT_MODELS, WhisperKitModelSpec, whisperkit_model_spec
+
+_PROGRESS_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:\.\d+)?)%")
+_PROGRESS_HINT_RE = re.compile(
+    r"(download|downloading|fetch|fetching|extract|extracting|prepare|preparing|convert|converting|tokenizer|model)",
+    re.IGNORECASE,
+)
 
 
 class WhisperKitRuntime:
@@ -53,6 +60,7 @@ class WhisperKitRuntime:
             ready = self.is_ready()
             launch_spec = self._resolve_launch_spec()
             managed = launch_spec is not None and self._is_local_target()
+            active_model = self._active_model_spec()
             payload: dict[str, object] = {
                 "managed": managed,
                 "autoStart": self.settings.whisperkit_autostart,
@@ -60,7 +68,7 @@ class WhisperKitRuntime:
                 "running": self._is_process_alive(),
                 "serverUrl": self.settings.whisper_server_url,
                 "logPath": str(self.log_path),
-                "currentModel": self.settings.whisper_model,
+                "currentModel": active_model.model_id if active_model is not None else self.settings.whisper_model,
                 "modelsDir": str(self.settings.whisperkit_models_dir),
                 "tokenizersDir": str(self.settings.whisperkit_tokenizers_dir),
             }
@@ -154,11 +162,12 @@ class WhisperKitRuntime:
         with self._lock:
             self._refresh_install_process_locked()
             runtime_ready = self.is_ready()
+            active_model = self._active_model_spec()
             models = []
             for spec in WHISPERKIT_MODELS:
-                installed = self._is_model_installed_locked(spec.model_id)
+                installed = self._is_model_installed_locked(spec)
                 install_source = "managed-cache"
-                if not installed and runtime_ready and spec.model_id == self.settings.whisper_model:
+                if not installed and runtime_ready and active_model is not None and spec.model_id == active_model.model_id:
                     installed = True
                     install_source = "runtime-cache"
                 if not installed:
@@ -167,7 +176,7 @@ class WhisperKitRuntime:
                     {
                         **spec.to_payload(),
                         "installed": installed,
-                        "active": spec.model_id == self.settings.whisper_model,
+                        "active": active_model is not None and spec.model_id == active_model.model_id,
                         "installing": self._installing_model == spec.model_id and self._is_install_process_alive(),
                         "installSource": install_source,
                     }
@@ -175,7 +184,7 @@ class WhisperKitRuntime:
 
             payload: dict[str, object] = {
                 "supported": self.can_manage(),
-                "activeModel": self.settings.whisper_model,
+                "activeModel": active_model.model_id if active_model is not None else self.settings.whisper_model,
                 "models": models,
                 "installingModel": self._installing_model if self._is_install_process_alive() else None,
                 "modelsDir": str(self.settings.whisperkit_models_dir),
@@ -193,7 +202,7 @@ class WhisperKitRuntime:
 
         with self._lock:
             self._refresh_install_process_locked()
-            if self._is_model_installed_locked(spec.model_id):
+            if self._is_model_installed_locked(spec):
                 self._last_install_warning = None
                 return self.model_catalog()
             if self._is_install_process_alive():
@@ -214,14 +223,14 @@ class WhisperKitRuntime:
             self.install_log_path.parent.mkdir(parents=True, exist_ok=True)
             self.settings.whisperkit_models_dir.mkdir(parents=True, exist_ok=True)
             self.settings.whisperkit_tokenizers_dir.mkdir(parents=True, exist_ok=True)
-            self._install_log_handle = self.install_log_path.open("a", encoding="utf-8")
+            self._install_log_handle = self.install_log_path.open("w", encoding="utf-8")
             env = os.environ.copy()
             env.update(runner_spec.env)
             command = [
                 *runner_spec.prefix,
                 "transcribe",
                 "--model",
-                spec.model_id,
+                spec.runtime_name,
                 "--download-model-path",
                 str(self.settings.whisperkit_models_dir),
                 "--download-tokenizer-path",
@@ -231,6 +240,9 @@ class WhisperKitRuntime:
             ]
             if self.settings.whisperkit_verbose:
                 command.append("--verbose")
+
+            self._install_log_handle.write(f"$ {' '.join(command)}\n")
+            self._install_log_handle.flush()
 
             self._install_process = subprocess.Popen(
                 command,
@@ -254,10 +266,12 @@ class WhisperKitRuntime:
             self._refresh_install_process_locked()
             if self._is_install_process_alive():
                 raise RuntimeError("Wait for the current model download to finish before switching models.")
-            if spec.model_id == self.settings.whisper_model:
+            active_model = self._active_model_spec()
+            if active_model is not None and spec.model_id == active_model.model_id:
                 return self.model_catalog()
-            if spec.model_id != self.settings.whisper_model and not self._is_model_installed_locked(spec.model_id):
-                raise RuntimeError(f"{spec.label} is not installed yet. Install it first, then switch.")
+            if active_model is None or spec.model_id != active_model.model_id:
+                if not self._is_model_installed_locked(spec):
+                    raise RuntimeError(f"{spec.label} is not installed yet. Install it first, then switch.")
 
             should_restart = self._is_process_alive() or self.is_ready() or self.settings.whisperkit_autostart
             self.settings.whisper_model = spec.model_id
@@ -265,6 +279,49 @@ class WhisperKitRuntime:
             if should_restart:
                 self.ensure_running()
             return self.model_catalog()
+
+    def request_model_name(self) -> str:
+        spec = self._active_model_spec()
+        if spec is None:
+            return self.settings.whisper_model
+        return spec.runtime_name
+
+    def _active_model_spec(self) -> WhisperKitModelSpec | None:
+        return whisperkit_model_spec(self.settings.whisper_model)
+
+    def _candidate_model_roots_locked(self) -> tuple[Path, ...]:
+        root = self.settings.whisperkit_models_dir
+        candidates: list[Path] = [root]
+        nested_roots = (
+            root / "models" / "argmaxinc" / "whisperkit-coreml",
+            root / "argmaxinc" / "whisperkit-coreml",
+        )
+        for candidate in nested_roots:
+            if candidate.exists():
+                candidates.append(candidate)
+        return tuple(candidates)
+
+    def _model_dir_ready(self, model_dir: Path) -> bool:
+        if not model_dir.is_dir():
+            return False
+        if (model_dir / "config.json").exists():
+            return True
+        return any(child.name != ".cache" for child in model_dir.iterdir())
+
+    def _find_installed_model_dir_locked(self, spec: WhisperKitModelSpec) -> Path | None:
+        for root in self._candidate_model_roots_locked():
+            for pattern in spec.model_install_globs:
+                for candidate in root.glob(pattern):
+                    if self._model_dir_ready(candidate):
+                        return candidate
+        return None
+
+    def _is_model_installed_locked(self, model: WhisperKitModelSpec | str) -> bool:
+        spec = model if isinstance(model, WhisperKitModelSpec) else whisperkit_model_spec(model)
+        if spec is None:
+            model_dir = self.settings.whisperkit_models_dir / f"openai_whisper-{str(model).strip()}"
+            return self._model_dir_ready(model_dir)
+        return self._find_installed_model_dir_locked(spec) is not None
 
     def _wait_for_ready(self) -> None:
         deadline = time.monotonic() + self.settings.whisperkit_startup_timeout_seconds
@@ -346,7 +403,7 @@ class WhisperKitRuntime:
             "--port",
             str(self.port),
             "--model",
-            self.settings.whisper_model,
+            self.request_model_name(),
             "--download-model-path",
             str(self.settings.whisperkit_models_dir),
             "--download-tokenizer-path",
@@ -429,9 +486,34 @@ class WhisperKitRuntime:
                 payload["pid"] = self._install_process.pid
         else:
             payload["running"] = False
+        log_text = self._read_install_log_text_locked()
+        if log_text:
+            log_tail = _tail_log_lines(log_text, max_lines=6)
+            if log_tail:
+                payload["logTail"] = log_tail
+            progress_percent, progress_label = _parse_install_progress(log_text)
+            if progress_percent is not None:
+                payload["progressPercent"] = progress_percent
+            if progress_label is not None:
+                payload["progressLabel"] = progress_label
+        if payload.get("running") and "progressLabel" not in payload:
+            model_name = self._installing_model or "selected model"
+            payload["progressLabel"] = f"Starting download for {model_name}."
         if self._last_install_warning is not None:
             payload["warning"] = self._last_install_warning
         return payload
+
+    def _read_install_log_text_locked(self, max_bytes: int = 32768) -> str:
+        path = self.install_log_path
+        if not path.exists():
+            return ""
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return ""
+        if len(raw) > max_bytes:
+            raw = raw[-max_bytes:]
+        return raw.decode("utf-8", errors="ignore")
 
     def _ensure_bootstrap_audio_locked(self) -> Path:
         bootstrap_audio = self.bootstrap_audio_path
@@ -446,13 +528,6 @@ class WhisperKitRuntime:
             handle.writeframes(b"\x00\x00" * 8000)
         return bootstrap_audio
 
-    def _is_model_installed_locked(self, model_id: str) -> bool:
-        model_dir = self.settings.whisperkit_models_dir / f"openai_whisper-{model_id}"
-        if not model_dir.exists():
-            return False
-        return any(model_dir.iterdir())
-
-
 class _LaunchSpec:
     def __init__(self, command: list[str], cwd: Path | None, env: dict[str, str]) -> None:
         self.command = command
@@ -465,3 +540,28 @@ class _RunnerSpec:
         self.prefix = prefix
         self.cwd = cwd
         self.env = env
+
+
+def _tail_log_lines(log_text: str, *, max_lines: int) -> list[str]:
+    lines = [line.rstrip() for line in log_text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    return lines[-max_lines:]
+
+
+def _parse_install_progress(log_text: str) -> tuple[int | None, str | None]:
+    lines = _tail_log_lines(log_text, max_lines=40)
+    fallback_line: str | None = None
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("$"):
+            continue
+        percent_match = None
+        for candidate in _PROGRESS_PERCENT_RE.finditer(stripped):
+            percent_match = candidate
+        if percent_match is not None:
+            progress = max(0, min(100, round(float(percent_match.group(1)))))
+            return progress, stripped
+        if fallback_line is None and _PROGRESS_HINT_RE.search(stripped):
+            fallback_line = stripped
+    return None, fallback_line

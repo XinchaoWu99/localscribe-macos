@@ -67,6 +67,8 @@ class ContextRefinementService:
             overlap_trimmed = _trim_boundary_overlap(previous, first)
             if not first.text.strip():
                 segments = segments[1:]
+            elif previous.manually_edited:
+                segments = self._coalesce_segments(segments)
             elif self._should_merge(previous, first, overlap_trimmed):
                 segments[0] = _merge_segments(previous, first)
                 replace_tail_count = 1
@@ -238,6 +240,8 @@ def _merge_segments(left: TranscriptSegment, right: TranscriptSegment) -> Transc
         speaker_name=left.speaker_name or right.speaker_name,
         is_final=left.is_final and right.is_final,
         source=right.source,
+        manually_edited=left.manually_edited or right.manually_edited,
+        edited_at=left.edited_at or right.edited_at,
         words=words,
     )
 
@@ -287,6 +291,8 @@ def _clone_segment(segment: TranscriptSegment) -> TranscriptSegment:
         speaker_name=segment.speaker_name,
         is_final=segment.is_final,
         source=segment.source,
+        manually_edited=segment.manually_edited,
+        edited_at=segment.edited_at,
         words=[
             SegmentWord(
                 start=word.start,

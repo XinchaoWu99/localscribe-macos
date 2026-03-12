@@ -12,3 +12,7 @@ build/
 dist/
 *.egg-info/
 .build/
+playwright-report/
+test-results/
+.playwright-data/
+node_modules/

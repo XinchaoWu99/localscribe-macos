@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..audio import normalize_audio, probe_duration_seconds
+from ..audio import audio_level_stats, normalize_audio, probe_duration_seconds
 from ..config import Settings
 from ..context import ContextRefinementService
 from ..diarization import DiarizationService
@@ -17,6 +17,8 @@ from .models import LiveChunkRequest, SpeakerEnrollmentRequest, UploadTranscript
 class StreamingService:
     MIN_CHUNK_MILLIS = 800
     MAX_CHUNK_MILLIS = 10000
+    LIVE_VAD_FALLBACK_RMS_NORMALIZED = 0.0025
+    LIVE_VAD_FALLBACK_PEAK_NORMALIZED = 0.025
 
     def __init__(
         self,
@@ -47,6 +49,15 @@ class StreamingService:
 
     def export_session(self, session_id: str, format_name: str) -> TranscriptExport:
         return build_session_export(self.get_session(session_id), format_name)
+
+    def rename_session(self, session_id: str, title: str | None) -> LiveSession:
+        return self.session_store.rename_session(session_id, title)
+
+    def update_segment_text(self, session_id: str, segment_id: str, text: str):
+        return self.session_store.update_segment_text(session_id, segment_id, text)
+
+    def clear_sessions(self, *, session_type: str | None = None, exclude_session_id: str | None = None) -> int:
+        return self.session_store.clear(session_type=session_type, exclude_session_id=exclude_session_id)
 
     def update_live_settings(self, *, chunk_millis: int | None = None) -> dict[str, object]:
         if chunk_millis is not None:
@@ -114,18 +125,27 @@ class StreamingService:
 
         normalize_audio(raw_path, normalized_path)
         duration_seconds = probe_duration_seconds(normalized_path)
+        level_stats = audio_level_stats(normalized_path)
         speech_windows = self.diarization_service.detect_speech(
             normalized_path,
             offset_seconds=request.options.offset_seconds,
         )
         if speech_windows == []:
-            result = TranscriptResult(
-                engine_name=self.engine.name,
-                segments=[],
-                speakers=list(session.speakers.values()),
-                duration_seconds=duration_seconds,
-                warnings=["No speech detected in the latest audio chunk."],
-            )
+            if self._should_bypass_live_vad(level_stats):
+                effective_options = self.context_refinement_service.build_live_options(session, request.options)
+                result = self.engine.transcribe_live_chunk(str(normalized_path), effective_options, session)
+                result.warnings = list(result.warnings) + [
+                    "Live speech fallback used because browser audio was below the default VAD gate.",
+                ]
+                speech_windows = None
+            else:
+                result = TranscriptResult(
+                    engine_name=self.engine.name,
+                    segments=[],
+                    speakers=list(session.speakers.values()),
+                    duration_seconds=duration_seconds,
+                    warnings=["No speech detected in the latest audio chunk."],
+                )
         else:
             effective_options = self.context_refinement_service.build_live_options(session, request.options)
             result = self.engine.transcribe_live_chunk(str(normalized_path), effective_options, session)
@@ -137,20 +157,23 @@ class StreamingService:
             speech_windows=speech_windows,
         )
         plan = self.context_refinement_service.refine_live_result(session, result, request.options)
-        plan.result = self.post_processing_service.refine_live_result(
+        post_process_plan = self.post_processing_service.refine_live_result(
             session,
             plan.result,
             request.options,
             replace_tail_count=plan.replace_tail_count,
         )
+        plan.result = post_process_plan.result
+        plan.replace_tail_count = post_process_plan.replace_tail_count
         session = self.session_store.apply_live_result(
             session,
             request.sequence,
             duration_seconds,
             plan.result,
             replace_tail_count=plan.replace_tail_count,
+            replacement_segments=post_process_plan.replacement_segments,
         )
-        return result, session
+        return plan.result, session
 
     def status(self) -> dict[str, object]:
         return {
@@ -160,6 +183,7 @@ class StreamingService:
             "maxUploadMb": self.settings.max_upload_mb,
             "mimeFallbackEnabled": True,
             "voiceActivityDetectionEnabled": self.settings.enable_vad,
+            "liveVadFallbackEnabled": True,
             "contextLinkingEnabled": self.context_refinement_service.enabled,
             "postProcessingDefaultEnabled": self.settings.enable_post_processing,
         }
@@ -172,6 +196,12 @@ class StreamingService:
     def _normalize_chunk_millis(self, value: int) -> int:
         normalized = int(value)
         return max(self.MIN_CHUNK_MILLIS, min(self.MAX_CHUNK_MILLIS, normalized))
+
+    def _should_bypass_live_vad(self, level_stats: dict[str, float]) -> bool:
+        return (
+            level_stats.get("rmsNormalized", 0.0) >= self.LIVE_VAD_FALLBACK_RMS_NORMALIZED
+            or level_stats.get("peakNormalized", 0.0) >= self.LIVE_VAD_FALLBACK_PEAK_NORMALIZED
+        )
 
 
 def _suffix_for_filename(filename: str) -> str:

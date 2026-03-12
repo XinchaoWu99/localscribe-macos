@@ -46,6 +46,8 @@ class TranscriptSegment:
     speaker_name: str | None = None
     is_final: bool = True
     source: str = "file"
+    manually_edited: bool = False
+    edited_at: str | None = None
     words: list[SegmentWord] = field(default_factory=list)
 
     def shifted(self, offset_seconds: float) -> "TranscriptSegment":
@@ -59,6 +61,8 @@ class TranscriptSegment:
             speaker_name=self.speaker_name,
             is_final=self.is_final,
             source=self.source,
+            manually_edited=self.manually_edited,
+            edited_at=self.edited_at,
             words=[
                 SegmentWord(
                     start=word.start + offset_seconds,
@@ -78,6 +82,7 @@ class TranscriptSegment:
             "text": self.text,
             "isFinal": self.is_final,
             "source": self.source,
+            "manuallyEdited": self.manually_edited,
             "words": [word.to_payload() for word in self.words],
         }
         if self.confidence is not None:
@@ -86,6 +91,8 @@ class TranscriptSegment:
             payload["speakerId"] = self.speaker_id
         if self.speaker_name is not None:
             payload["speakerName"] = self.speaker_name
+        if self.edited_at is not None:
+            payload["editedAt"] = self.edited_at
         return payload
 
     @classmethod
@@ -107,6 +114,8 @@ class TranscriptSegment:
             speaker_name=_maybe_str(payload.get("speakerName")),
             is_final=bool(payload.get("isFinal", True)),
             source=str(payload.get("source", "file")),
+            manually_edited=bool(payload.get("manuallyEdited", False)),
+            edited_at=_maybe_str(payload.get("editedAt")),
             words=words,
         )
 
@@ -174,6 +183,8 @@ class TranscriptionOptions:
     prompt: str | None = None
     link_context: bool = True
     post_process: bool = False
+    post_process_backend: str | None = None
+    post_process_model: str | None = None
     live: bool = False
     max_speakers: int = 6
     offset_seconds: float = 0.0
@@ -217,6 +228,28 @@ class LiveSession:
             if segment.speaker_id == speaker_id:
                 segment.speaker_name = normalized
         return profile
+
+    def rename(self, title: str | None) -> str | None:
+        normalized = _maybe_str(title)
+        self.title = normalized
+        return self.title
+
+    def update_segment_text(self, segment_id: str, text: str) -> TranscriptSegment:
+        normalized = text.strip()
+        if not normalized:
+            raise ValueError("Segment text cannot be empty.")
+
+        for segment in self.segments:
+            if segment.segment_id != segment_id:
+                continue
+            segment.text = normalized
+            # Word alignment is no longer trustworthy after a manual edit.
+            segment.words = []
+            segment.manually_edited = True
+            segment.edited_at = utcnow_iso()
+            return segment
+
+        raise KeyError(f"Unknown segment: {segment_id}")
 
     def to_payload(self) -> dict[str, object]:
         return {

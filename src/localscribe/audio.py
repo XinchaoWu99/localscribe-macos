@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
+from array import array
 import shutil
 import subprocess
 from pathlib import Path
+import wave
 
 
 def _run(command: list[str]) -> None:
@@ -90,3 +93,34 @@ def extract_clip(source: Path, destination: Path, start_seconds: float, end_seco
             str(destination),
         ]
     )
+
+
+def audio_level_stats(path: Path) -> dict[str, float]:
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        sample_width = handle.getsampwidth()
+        raw = handle.readframes(handle.getnframes())
+
+    if channels != 1:
+        raise RuntimeError(f"Audio level analysis expects mono WAV input, got {channels} channels in {path}.")
+    if sample_width != 2:
+        raise RuntimeError(f"Audio level analysis expects 16-bit PCM WAV input, got {sample_width * 8}-bit audio.")
+
+    pcm = array("h")
+    pcm.frombytes(raw)
+    if not pcm:
+        return {
+            "rms": 0.0,
+            "peak": 0.0,
+            "rmsNormalized": 0.0,
+            "peakNormalized": 0.0,
+        }
+
+    peak = max(abs(value) for value in pcm)
+    rms = math.sqrt(sum(value * value for value in pcm) / len(pcm))
+    return {
+        "rms": rms,
+        "peak": float(peak),
+        "rmsNormalized": rms / 32768.0,
+        "peakNormalized": peak / 32768.0,
+    }

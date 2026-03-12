@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LocalScribe</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260312h" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260312q" />
   </head>
   <body>
     <div class="backdrop-orb backdrop-orb-left"></div>
@@ -12,27 +12,149 @@
 
     <div class="shell">
       <header class="hero panel">
-        <div class="hero-copy">
-          <p class="eyebrow">macOS local transcription workspace</p>
-          <h1>LocalScribe</h1>
-          <p class="lede">
-            Run a live transcription control room on your Mac with local inference, speaker-aware segmentation,
-            and fast scenario presets for meetings, interviews, podcasts, and streamed audio.
-          </p>
-          <div class="hero-tags">
-            <span class="hero-tag">Local audio path</span>
-            <span class="hero-tag">Browser UI</span>
-            <span class="hero-tag">Speaker-aware workflow</span>
+        <div class="hero-main">
+          <div class="hero-copy">
+            <p class="eyebrow">macOS local transcription workspace</p>
+            <h1>LocalScribe</h1>
+            <p class="lede">
+              Run a live transcription control room on your Mac with local inference, speaker-aware segmentation,
+              and fast scenario presets for meetings, interviews, podcasts, and streamed audio.
+            </p>
+            <div class="hero-tags">
+              <span class="hero-tag">Local audio path</span>
+              <span class="hero-tag">Browser UI</span>
+              <span class="hero-tag">Speaker-aware workflow</span>
+            </div>
+          </div>
+
+          <section class="intro-panel">
+            <div class="intro-head">
+              <p class="eyebrow">Quick Guide</p>
+              <h2>Use LocalScribe like a live control desk</h2>
+              <p class="microcopy">
+                This tool is optimized for real-time transcription. Pick the audio source, choose a preset, create a
+                session, then start the mic and watch the transcript update as the conversation unfolds.
+              </p>
+            </div>
+
+            <div class="guide-list">
+              <article class="guide-item">
+                <span class="guide-step">1</span>
+                <div class="guide-copy">
+                  <strong>Pick the audio path</strong>
+                  <p>Use live microphone for calls and rooms, or browser/system audio when you are transcribing playback.</p>
+                </div>
+              </article>
+              <article class="guide-item">
+                <span class="guide-step">2</span>
+                <div class="guide-copy">
+                  <strong>Choose a speaking scenario</strong>
+                  <p>Meeting, interview, podcast, and news presets adjust prompt bias and segment cadence automatically.</p>
+                </div>
+              </article>
+              <article class="guide-item">
+                <span class="guide-step">3</span>
+                <div class="guide-copy">
+                  <strong>Start a live session</strong>
+                  <p>Create a session, start the mic, then review the speaker roster, markers, and transcript timeline below.</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <div class="hero-board">
+            <article class="hero-tile">
+              <span class="tile-label">Inference engine</span>
+              <strong id="engineName">Loading…</strong>
+              <p id="engineHint">Checking local runtime.</p>
+            </article>
+            <article class="hero-tile">
+              <span class="tile-label">Speaker identity</span>
+              <strong id="speakerState">Loading…</strong>
+              <p id="speakerHint">Checking embedding pipeline.</p>
+            </article>
+            <article class="hero-tile hero-tile-accent">
+              <span class="tile-label">Session state</span>
+              <strong id="sessionStatusText">Idle</strong>
+              <p id="sessionCaption">Create a live session to begin.</p>
+            </article>
           </div>
         </div>
+      </header>
 
-        <div class="hero-side">
-          <section class="starter-panel">
+      <main class="workspace">
+        <section class="launch-stage">
+          <section class="workflow-card panel workflow-card-spotlight workflow-card-priority" id="liveWorkflowCard">
+            <div class="capture-hero">
+              <div class="step-head capture-step-head">
+                <span class="step-index">01</span>
+                <div>
+                  <h2>Capture Live</h2>
+                  <p>Start recording from here, then use the setup cards below whenever you want to refine the live flow.</p>
+                </div>
+              </div>
+
+              <div class="capture-command">
+                <div class="status-inline capture-status-inline">
+                  <span class="pill" id="livePill">Idle</span>
+                  <span class="status-inline-copy" id="liveSummary">No session armed yet.</span>
+                </div>
+
+                <div class="capture-actions">
+                  <button class="primary" id="createSessionButton">New Session</button>
+                  <button class="primary accent" id="startButton">Start Mic</button>
+                  <button class="secondary" id="stopButton" disabled>Stop</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="capture-notes capture-notes-grid">
+              <article class="capture-note">
+                <strong>Fastest path</strong>
+                <p>Use Safari plus live microphone when you want the most reliable first-time experience.</p>
+              </article>
+              <article class="capture-note">
+                <strong>Refine after you start</strong>
+                <p>Segment length, prompt bias, and cleanup settings can still be adjusted after capture begins.</p>
+              </article>
+              <article class="capture-note">
+                <strong>System audio option</strong>
+                <p>For Mac speaker output, use the ScreenCaptureKit helper or route audio into a loopback input.</p>
+              </article>
+            </div>
+          </section>
+
+          <div class="summary-strip panel">
+            <div class="summary-chip">
+              <span>Mode</span>
+              <strong id="modeValue">Waiting</strong>
+            </div>
+            <div class="summary-chip">
+              <span>Duration</span>
+              <strong id="durationValue">0s</strong>
+            </div>
+            <div class="summary-chip">
+              <span>Segments</span>
+              <strong id="segmentCountValue">0</strong>
+            </div>
+            <div class="summary-chip">
+              <span>Speakers</span>
+              <strong id="speakerCountValue">0</strong>
+            </div>
+            <div class="summary-chip summary-chip-wide">
+              <span>Current session</span>
+              <strong id="sessionIdPill">No session</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="setup-suite">
+          <section class="starter-panel setup-panel">
             <div class="starter-head">
               <p class="eyebrow">Start Here</p>
-              <h2>Choose the live audio path and speaking style first</h2>
+              <h2>Choose the audio path and speaking style</h2>
               <p class="microcopy">
-                LocalScribe will preload a scenario prompt, recommend a segment cadence, and arm the live transcription flow.
+                Pick a scenario first so LocalScribe can preload a better prompt, cadence, and speaker behavior for live capture.
               </p>
             </div>
 
@@ -96,6 +218,23 @@
                 <span class="starter-metric" id="starterSpeakerHint">Speaker labels on</span>
                 <span class="starter-metric" id="starterFocusHint">Decision tracking</span>
               </div>
+              <section class="starter-launch">
+                <div class="starter-launch-copy">
+                  <div class="starter-launch-head">
+                    <span class="tile-label">Ready when you are</span>
+                    <span class="pill starter-launch-pill" id="starterLaunchState">Ready to start</span>
+                  </div>
+                  <p class="microcopy" id="starterActionHint">
+                    LocalScribe will create a live session, request audio permission, and begin transcription from the selected source.
+                  </p>
+                </div>
+                <div class="button-row starter-actions">
+                  <button class="primary starter-primary" id="starterPrimaryButton" type="button">
+                    Start Live Transcription
+                  </button>
+                  <button class="secondary" id="starterSecondaryButton" type="button">Refine Live Setup</button>
+                </div>
+              </section>
               <div class="prompt-preview-shell">
                 <span class="prompt-preview-label">Suggested prompt bias</span>
                 <blockquote class="prompt-preview" id="starterPromptPreview">
@@ -103,38 +242,12 @@
                   steps. Use clear punctuation and speaker-consistent wording.
                 </blockquote>
               </div>
-              <div class="button-row starter-actions">
-                <button class="primary" id="starterPrimaryButton" type="button">Arm Live Session</button>
-                <button class="secondary" id="starterSecondaryButton" type="button">Refine Live Setup</button>
-              </div>
             </div>
           </section>
 
-          <div class="hero-board">
-            <article class="hero-tile">
-              <span class="tile-label">Inference engine</span>
-              <strong id="engineName">Loading…</strong>
-              <p id="engineHint">Checking local runtime.</p>
-            </article>
-            <article class="hero-tile">
-              <span class="tile-label">Speaker identity</span>
-              <strong id="speakerState">Loading…</strong>
-              <p id="speakerHint">Checking embedding pipeline.</p>
-            </article>
-            <article class="hero-tile hero-tile-accent">
-              <span class="tile-label">Session state</span>
-              <strong id="sessionStatusText">Idle</strong>
-              <p id="sessionCaption">Create a live session to begin.</p>
-            </article>
-          </div>
-        </div>
-      </header>
-
-      <main class="workspace">
-        <aside class="sidebar">
           <section class="workflow-card panel" id="dialInCard">
             <div class="step-head">
-              <span class="step-index">01</span>
+              <span class="step-index">02</span>
               <div>
                 <h2>Live Setup</h2>
                 <p>Shape the live transcription before the microphone or shared audio starts flowing.</p>
@@ -213,6 +326,17 @@
               <button class="primary" id="switchModelButton" type="button">Use Model</button>
             </div>
 
+            <section class="install-progress-card" id="modelInstallProgress" aria-live="polite" hidden>
+              <div class="install-progress-head">
+                <strong id="modelInstallStatus">Starting model download…</strong>
+                <span id="modelInstallMeta">Preparing LocalScribe-managed storage.</span>
+              </div>
+              <div class="install-progress-track" id="modelInstallTrack" aria-hidden="true">
+                <div class="install-progress-fill" id="modelInstallBar"></div>
+              </div>
+              <pre class="install-progress-log" id="modelInstallLog"></pre>
+            </section>
+
             <p class="microcopy" id="modelDetail">
               Installed models switch quickly. Missing models can be downloaded into LocalScribe-managed storage first.
             </p>
@@ -227,72 +351,44 @@
               <span>Try to assign speakers automatically</span>
             </label>
 
-            <label class="toggle">
-              <input id="contextLinkToggle" type="checkbox" checked />
-              <span>Use rolling context to stitch segments and keep names, acronyms, and sentence flow consistent</span>
-            </label>
+            <div class="quality-note">
+              <span class="tile-label">Always on quality layer</span>
+              <p class="microcopy">
+                Rolling context stitching and local LLM cleanup stay active for every live chunk to keep names,
+                acronyms, sentence flow, and punctuation more consistent.
+              </p>
+            </div>
 
-            <label class="toggle">
-              <input id="postProcessToggle" type="checkbox" />
-              <span>Run an optional local cleanup pass for punctuation and entity correction after each chunk</span>
-            </label>
+            <div class="field-grid cleanup-grid">
+              <label class="field">
+                <span>Cleanup LLM</span>
+                <select id="cleanupBackendSelect">
+                  <option value="">Loading cleanup engines…</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Cleanup model</span>
+                <input
+                  id="cleanupModelInput"
+                  type="text"
+                  placeholder="Loading local model options…"
+                  list="cleanupModelSuggestions"
+                />
+                <datalist id="cleanupModelSuggestions"></datalist>
+              </label>
+            </div>
+
+            <p class="microcopy" id="cleanupHint">
+              Choose which local LLM should polish punctuation and entity names after each chunk.
+            </p>
 
             <p class="microcopy" id="helperNote">
               Shorter segments feel more live. Longer segments usually improve transcript stability.
             </p>
           </section>
-
-          <section class="workflow-card panel workflow-card-spotlight" id="liveWorkflowCard">
-            <div class="step-head">
-              <span class="step-index">02</span>
-              <div>
-                <h2>Capture Live</h2>
-                <p>Open a session, then stream microphone or shared audio into the local backend.</p>
-              </div>
-            </div>
-
-            <div class="status-inline">
-              <span class="pill" id="livePill">Idle</span>
-              <span class="status-inline-copy" id="liveSummary">No session armed yet.</span>
-            </div>
-
-            <div class="button-row">
-              <button class="primary" id="createSessionButton">New Session</button>
-              <button class="primary accent" id="startButton">Start Mic</button>
-              <button class="secondary" id="stopButton" disabled>Stop</button>
-            </div>
-
-            <p class="microcopy">
-              Need native macOS system audio without browser limits? Run the ScreenCaptureKit helper in
-              <code>native/system-audio-helper</code>, then open the session from Recent sessions.
-            </p>
-          </section>
-        </aside>
+        </section>
 
         <section class="stage">
-          <div class="summary-strip panel">
-            <div class="summary-chip">
-              <span>Mode</span>
-              <strong id="modeValue">Waiting</strong>
-            </div>
-            <div class="summary-chip">
-              <span>Duration</span>
-              <strong id="durationValue">0s</strong>
-            </div>
-            <div class="summary-chip">
-              <span>Segments</span>
-              <strong id="segmentCountValue">0</strong>
-            </div>
-            <div class="summary-chip">
-              <span>Speakers</span>
-              <strong id="speakerCountValue">0</strong>
-            </div>
-            <div class="summary-chip summary-chip-wide">
-              <span>Current session</span>
-              <strong id="sessionIdPill">No session</strong>
-            </div>
-          </div>
-
           <section class="panel transcript-stage">
             <div class="stage-head">
               <div>
@@ -320,45 +416,52 @@
 
             <div class="warning-list" id="warnings"></div>
 
-            <section class="subsection">
-              <div class="subsection-head">
-                <div>
-                  <h3>Speaker roster</h3>
-                  <p id="rosterLead">Known and inferred voices appear here. Rename any detected speaker and the transcript updates immediately.</p>
-                </div>
+            <div class="transcript-layout">
+              <div class="transcript-main">
+                <section class="subsection transcript-subsection">
+                  <div class="subsection-head">
+                    <div>
+                      <h3>Live segment editor</h3>
+                      <p id="timelineHint">New transcript segments will appear here and can be corrected live.</p>
+                    </div>
+                  </div>
+                  <div class="timeline" id="timeline"></div>
+                </section>
               </div>
-              <div class="speaker-roster" id="speakerRoster"></div>
-            </section>
 
-            <section class="subsection">
-              <div class="subsection-head">
-                <div>
-                  <h3>Speaker markers</h3>
-                  <p id="markerLead">Each detected speaker change is listed here so you can jump through the conversation.</p>
-                </div>
-              </div>
-              <div class="speaker-markers" id="speakerMarkers"></div>
-            </section>
+              <div class="transcript-rail">
+                <section class="subsection">
+                  <div class="subsection-head">
+                    <div>
+                      <h3>Speaker roster</h3>
+                      <p id="rosterLead">Known and inferred voices appear here. Rename any detected speaker and the transcript updates immediately.</p>
+                    </div>
+                  </div>
+                  <div class="speaker-roster" id="speakerRoster"></div>
+                </section>
 
-            <section class="subsection transcript-subsection">
-              <div class="subsection-head">
-                <div>
-                  <h3>Transcript timeline</h3>
-                  <p id="timelineHint">Newest transcript segments will appear in sequence.</p>
-                </div>
-              </div>
-              <div class="timeline" id="timeline"></div>
-            </section>
+                <section class="subsection">
+                  <div class="subsection-head">
+                    <div>
+                      <h3>Speaker markers</h3>
+                      <p id="markerLead">Each detected speaker change is listed here so you can jump through the conversation.</p>
+                    </div>
+                  </div>
+                  <div class="speaker-markers" id="speakerMarkers"></div>
+                </section>
 
-            <section class="subsection">
-              <div class="subsection-head">
-                <div>
-                  <h3>Recent live sessions</h3>
-                  <p>Saved live transcripts are kept on disk and can be reopened here.</p>
-                </div>
+                <section class="subsection">
+                  <div class="subsection-head">
+                    <div>
+                      <h3>Recent live sessions</h3>
+                      <p>Saved live transcripts are kept on disk and can be reopened here.</p>
+                    </div>
+                    <button class="ghost" id="clearHistoryButton" type="button">Clear History</button>
+                  </div>
+                  <div class="session-history" id="sessionHistory"></div>
+                </section>
               </div>
-              <div class="session-history" id="sessionHistory"></div>
-            </section>
+            </div>
           </section>
         </section>
       </main>
@@ -370,10 +473,10 @@
           <span class="segment-speaker"></span>
           <span class="segment-time"></span>
         </div>
-        <p class="segment-text"></p>
+        <textarea class="segment-editor" rows="2" aria-label="Edit transcript segment"></textarea>
       </article>
     </template>
 
-    <script src="/static/app.js?v=20260312h" defer></script>
+    <script src="/static/app.js?v=20260312q" defer></script>
   </body>
 </html>

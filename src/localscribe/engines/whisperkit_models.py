@@ -11,7 +11,24 @@ class WhisperKitModelSpec:
     speed_hint: str
     quality_hint: str
     description: str
+    runtime_model: str | None = None
+    aliases: tuple[str, ...] = ()
+    install_globs: tuple[str, ...] = ()
     recommended: bool = False
+
+    @property
+    def runtime_name(self) -> str:
+        return self.runtime_model or self.model_id
+
+    @property
+    def known_ids(self) -> tuple[str, ...]:
+        return (self.model_id, self.runtime_name, *self.aliases)
+
+    @property
+    def model_install_globs(self) -> tuple[str, ...]:
+        if self.install_globs:
+            return self.install_globs
+        return (f"openai_whisper-{self.runtime_name}",)
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -21,6 +38,7 @@ class WhisperKitModelSpec:
             "speedHint": self.speed_hint,
             "qualityHint": self.quality_hint,
             "description": self.description,
+            "runtimeModel": self.runtime_name,
             "recommended": self.recommended,
         }
 
@@ -65,6 +83,19 @@ WHISPERKIT_MODELS: tuple[WhisperKitModelSpec, ...] = (
         speed_hint="Balanced",
         quality_hint="High",
         description="Recommended default for strong accuracy with better throughput than full large-v3.",
+        runtime_model="large-v3_turbo",
+        aliases=(
+            "large-v3_turbo",
+            "large-v3*_turbo",
+            "large-v3-v20240930_turbo",
+            "large-v3-v20240930_turbo_954MB",
+        ),
+        install_globs=(
+            "openai_whisper-large-v3_turbo",
+            "openai_whisper-large-v3*_turbo",
+            "openai_whisper-large-v3*_turbo*",
+            "openai_whisper-large-v3-turbo",
+        ),
         recommended=True,
     ),
     WhisperKitModelSpec(
@@ -83,6 +114,6 @@ WHISPERKIT_MODEL_IDS = {spec.model_id for spec in WHISPERKIT_MODELS}
 def whisperkit_model_spec(model_id: str) -> WhisperKitModelSpec | None:
     normalized = model_id.strip()
     for spec in WHISPERKIT_MODELS:
-        if spec.model_id == normalized:
+        if normalized in spec.known_ids:
             return spec
     return None

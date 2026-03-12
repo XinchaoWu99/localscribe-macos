@@ -234,4 +234,4 @@ node --check src/localscribe/static/app.js
 
 ## License
 
-Add your preferred license before publishing. `MIT` or `Apache-2.0` are both reasonable choices for this project.
+This repository now includes the [MIT License](LICENSE).

@@ -30,9 +30,9 @@ class Settings:
     context_prompt_max_chars: int = 480
     context_merge_gap_seconds: float = 1.1
     context_merge_max_turn_seconds: float = 28.0
-    enable_post_processing: bool = False
-    postprocess_backend: str = "none"
-    postprocess_model: str | None = None
+    enable_post_processing: bool = True
+    postprocess_backend: str = "ollama"
+    postprocess_model: str | None = "qwen2.5:3b-instruct"
     postprocess_timeout_seconds: float = 6.0
     postprocess_recent_segments: int = 4
     postprocess_max_context_chars: int = 600
@@ -85,10 +85,10 @@ class Settings:
             context_merge_max_turn_seconds=float(
                 os.getenv("LOCALSCRIBE_CONTEXT_MERGE_MAX_TURN_SECONDS", "28.0")
             ),
-            enable_post_processing=os.getenv("LOCALSCRIBE_ENABLE_POST_PROCESSING", "0")
+            enable_post_processing=os.getenv("LOCALSCRIBE_ENABLE_POST_PROCESSING", "1")
             in {"1", "true", "TRUE"},
-            postprocess_backend=os.getenv("LOCALSCRIBE_POSTPROCESS_BACKEND", "none"),
-            postprocess_model=os.getenv("LOCALSCRIBE_POSTPROCESS_MODEL") or None,
+            postprocess_backend=os.getenv("LOCALSCRIBE_POSTPROCESS_BACKEND", "ollama"),
+            postprocess_model=os.getenv("LOCALSCRIBE_POSTPROCESS_MODEL") or "qwen2.5:3b-instruct",
             postprocess_timeout_seconds=float(os.getenv("LOCALSCRIBE_POSTPROCESS_TIMEOUT_SECONDS", "6.0")),
             postprocess_recent_segments=int(os.getenv("LOCALSCRIBE_POSTPROCESS_RECENT_SEGMENTS", "4")),
             postprocess_max_context_chars=int(os.getenv("LOCALSCRIBE_POSTPROCESS_MAX_CONTEXT_CHARS", "600")),

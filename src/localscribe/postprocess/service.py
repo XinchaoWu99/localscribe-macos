@@ -10,7 +10,7 @@ from typing import Protocol
 
 import httpx
 
-from ..models import LiveSession, TranscriptResult, TranscriptSegment, TranscriptionOptions
+from ..models import LiveSession, SegmentWord, TranscriptResult, TranscriptSegment, TranscriptionOptions
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
 
@@ -25,6 +25,22 @@ class PostProcessorBackend(Protocol):
 class SegmentCorrection:
     segment_id: str
     text: str
+
+
+@dataclass(slots=True)
+class PostProcessingPlan:
+    result: TranscriptResult
+    replace_tail_count: int = 0
+    replacement_segments: list[TranscriptSegment] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PostProcessorBackendOption:
+    backend_id: str
+    label: str
+    description: str
+    default_model: str | None = None
+    model_placeholder: str = ""
 
 
 class NoOpPostProcessorBackend:
@@ -193,6 +209,30 @@ class MLXPostProcessorBackend:
 
 
 class LocalPostProcessingService:
+    BACKEND_OPTIONS: tuple[PostProcessorBackendOption, ...] = (
+        PostProcessorBackendOption(
+            backend_id="none",
+            label="Cleanup off",
+            description="Skip the local cleanup pass and keep the raw transcript stitching only.",
+            default_model=None,
+            model_placeholder="No model needed",
+        ),
+        PostProcessorBackendOption(
+            backend_id="ollama",
+            label="Ollama",
+            description="Use a local Ollama chat model after each chunk for punctuation and entity cleanup.",
+            default_model="qwen2.5:3b-instruct",
+            model_placeholder="qwen2.5:3b-instruct",
+        ),
+        PostProcessorBackendOption(
+            backend_id="mlx",
+            label="MLX",
+            description="Use an MLX model already available on this Mac for an on-device cleanup pass.",
+            default_model="mlx-community/Qwen2.5-3B-Instruct-4bit",
+            model_placeholder="mlx-community/Qwen2.5-3B-Instruct-4bit",
+        ),
+    )
+
     def __init__(
         self,
         *,
@@ -211,20 +251,59 @@ class LocalPostProcessingService:
         self.timeout_seconds = timeout_seconds
         self.recent_segments = recent_segments
         self.max_context_chars = max_context_chars
-        self._backend = backend_override or self._build_backend(ollama_base_url)
+        self.ollama_base_url = ollama_base_url.rstrip("/")
+        self._backend_override = backend_override
+        self._backend_cache: dict[tuple[str, str | None], PostProcessorBackend] = {}
         self._last_warning: str | None = None
 
     def status(self) -> dict[str, object]:
-        backend_status = self._backend.status()
+        backend_name, model = self._resolve_selection()
+        backend_status = self._backend_for_selection(backend_name, model).status()
         warning = backend_status.get("warning") or self._last_warning
         return {
-            "enabled": self.enabled and self.backend_name != "none",
+            "enabled": backend_name != "none",
             "backend": backend_status.get("backend", self.backend_name),
             "ready": bool(backend_status.get("ready", False)),
-            "model": backend_status.get("model", self.model),
+            "model": backend_status.get("model", model),
             "warning": warning,
             "defaultEnabled": self.enabled,
             "timeoutSeconds": self.timeout_seconds,
+        }
+
+    def catalog(self) -> dict[str, object]:
+        backends = []
+        ollama_models = self._ollama_installed_models()
+        for option in self.BACKEND_OPTIONS:
+            resolved_model = self._default_model_for_backend(option.backend_id)
+            backend_status = self._backend_for_selection(option.backend_id, resolved_model).status()
+            suggested_models: list[str] = []
+            if option.backend_id == "ollama":
+                if option.default_model:
+                    suggested_models.append(option.default_model)
+                for model_name in ollama_models:
+                    if model_name not in suggested_models:
+                        suggested_models.append(model_name)
+            elif option.default_model:
+                suggested_models.append(option.default_model)
+
+            backends.append(
+                {
+                    "id": option.backend_id,
+                    "label": option.label,
+                    "description": option.description,
+                    "ready": bool(backend_status.get("ready", option.backend_id == "none")),
+                    "warning": backend_status.get("warning"),
+                    "defaultModel": resolved_model,
+                    "modelPlaceholder": option.model_placeholder,
+                    "suggestedModels": suggested_models,
+                }
+            )
+
+        return {
+            "defaultEnabled": self.enabled,
+            "defaultBackend": self.backend_name,
+            "defaultModel": self.model,
+            "backends": backends,
         }
 
     def refine_live_result(
@@ -234,41 +313,60 @@ class LocalPostProcessingService:
         options: TranscriptionOptions,
         *,
         replace_tail_count: int = 0,
-    ) -> TranscriptResult:
+    ) -> PostProcessingPlan:
         if not self._should_process(options, result):
-            return result
+            return PostProcessingPlan(result=result, replace_tail_count=replace_tail_count)
 
-        recent_context = self._recent_context(session, trim_tail=replace_tail_count)
-        self._apply_corrections(result, recent_context)
-        return result
+        rewrite_tail = self._rewrite_tail_window(session, trim_tail=replace_tail_count)
+        recent_context = self._recent_context(session, trim_tail=replace_tail_count + len(rewrite_tail))
+        current_segments = [_clone_segment(segment) for segment in result.segments]
+        rewrite_segments = [_clone_segment(segment) for segment in rewrite_tail]
+        combined_segments = rewrite_segments + current_segments
+        self._apply_corrections(combined_segments, recent_context, options)
+        result.segments = combined_segments[len(rewrite_segments) :]
+
+        if not rewrite_segments:
+            return PostProcessingPlan(result=result, replace_tail_count=replace_tail_count)
+
+        return PostProcessingPlan(
+            result=result,
+            replace_tail_count=replace_tail_count + len(rewrite_segments),
+            replacement_segments=combined_segments,
+        )
 
     def refine_file_result(self, result: TranscriptResult, options: TranscriptionOptions) -> TranscriptResult:
         if not self._should_process(options, result):
             return result
 
-        self._apply_corrections(result, recent_context=None)
+        self._apply_corrections(result.segments, recent_context=None, options=options)
         return result
 
-    def _apply_corrections(self, result: TranscriptResult, recent_context: str | None) -> None:
-        prompt = _build_prompt(result.segments, recent_context)
+    def _apply_corrections(
+        self,
+        segments: list[TranscriptSegment],
+        recent_context: str | None,
+        options: TranscriptionOptions,
+    ) -> None:
+        prompt = _build_prompt(segments, recent_context)
         try:
-            raw_response = self._backend.correct(prompt)
+            backend_name, model = self._resolve_selection(options)
+            backend = self._backend_for_selection(backend_name, model)
+            raw_response = backend.correct(prompt)
             corrections = _parse_corrections(raw_response)
         except Exception as exc:
             self._last_warning = str(exc)
             return
 
-        _apply_corrections(result.segments, corrections)
+        _apply_corrections(segments, corrections)
         self._last_warning = None
 
     def _should_process(self, options: TranscriptionOptions, result: TranscriptResult) -> bool:
-        if not self.enabled or self.backend_name == "none":
-            return False
         if not options.post_process:
             return False
         if not result.segments:
             return False
-        return True
+        backend_name, _ = self._resolve_selection(options)
+        return backend_name != "none"
 
     def _recent_context(self, session: LiveSession, *, trim_tail: int = 0) -> str | None:
         segments = session.segments[:-trim_tail] if trim_tail > 0 else session.segments
@@ -281,14 +379,84 @@ class LocalPostProcessingService:
             return joined
         return joined[-self.max_context_chars :].lstrip()
 
-    def _build_backend(self, ollama_base_url: str) -> PostProcessorBackend:
-        if self.backend_name == "ollama":
-            model = self.model or "qwen2.5:3b-instruct"
-            return OllamaPostProcessorBackend(ollama_base_url, model, self.timeout_seconds)
-        if self.backend_name == "mlx":
-            model = self.model or "mlx-community/Qwen2.5-3B-Instruct-4bit"
-            return MLXPostProcessorBackend(model, self.timeout_seconds)
-        return NoOpPostProcessorBackend()
+    def _rewrite_tail_window(self, session: LiveSession, *, trim_tail: int = 0) -> list[TranscriptSegment]:
+        if self.recent_segments <= 0:
+            return []
+
+        segments = session.segments[:-trim_tail] if trim_tail > 0 else session.segments
+        if not segments:
+            return []
+
+        rewrite_tail: list[TranscriptSegment] = []
+        for segment in reversed(segments):
+            if segment.manually_edited:
+                break
+            rewrite_tail.append(segment)
+            if len(rewrite_tail) >= self.recent_segments:
+                break
+        rewrite_tail.reverse()
+        return rewrite_tail
+
+    def _resolve_selection(self, options: TranscriptionOptions | None = None) -> tuple[str, str | None]:
+        requested_backend = self.backend_name
+        requested_model = self.model
+        if options is not None:
+            if options.post_process_backend is not None:
+                requested_backend = options.post_process_backend
+            if options.post_process_model is not None:
+                requested_model = options.post_process_model
+        backend_name = (requested_backend or "none").strip().lower() or "none"
+        model = self._default_model_for_backend(backend_name, requested_model)
+        return backend_name, model
+
+    def _default_model_for_backend(self, backend_name: str, requested_model: str | None = None) -> str | None:
+        model = (requested_model or "").strip() or None
+        if model is not None:
+            return model
+        for option in self.BACKEND_OPTIONS:
+            if option.backend_id == backend_name:
+                return option.default_model
+        return None
+
+    def _backend_for_selection(self, backend_name: str, model: str | None) -> PostProcessorBackend:
+        if backend_name == "none":
+            return NoOpPostProcessorBackend()
+        cache_key = (backend_name, model)
+        cached = self._backend_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if self._backend_override is not None and backend_name == self.backend_name and model == self._default_model_for_backend(self.backend_name, self.model):
+            backend = self._backend_override
+        elif backend_name == "ollama":
+            backend = OllamaPostProcessorBackend(self.ollama_base_url, model or "qwen2.5:3b-instruct", self.timeout_seconds)
+        elif backend_name == "mlx":
+            backend = MLXPostProcessorBackend(model or "mlx-community/Qwen2.5-3B-Instruct-4bit", self.timeout_seconds)
+        else:
+            backend = NoOpPostProcessorBackend()
+        self._backend_cache[cache_key] = backend
+        return backend
+
+    def _ollama_installed_models(self) -> list[str]:
+        try:
+            with httpx.Client(timeout=min(self.timeout_seconds, 2.5)) as client:
+                response = client.get(f"{self.ollama_base_url}/api/tags")
+                response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            return []
+
+        models: list[str] = []
+        raw_models = payload.get("models")
+        if not isinstance(raw_models, list):
+            return models
+        for entry in raw_models:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).strip()
+            if name and name not in models:
+                models.append(name)
+        return models
 
 
 def _build_prompt(segments: list[TranscriptSegment], recent_context: str | None) -> str:
@@ -380,3 +548,28 @@ def _preserves_word_sequence(original: str, corrected: str) -> bool:
 
 def _normalized_tokens(text: str) -> list[str]:
     return [match.group(0).lower() for match in _TOKEN_RE.finditer(text)]
+
+
+def _clone_segment(segment: TranscriptSegment) -> TranscriptSegment:
+    return TranscriptSegment(
+        segment_id=segment.segment_id,
+        start=segment.start,
+        end=segment.end,
+        text=segment.text,
+        confidence=segment.confidence,
+        speaker_id=segment.speaker_id,
+        speaker_name=segment.speaker_name,
+        is_final=segment.is_final,
+        source=segment.source,
+        manually_edited=segment.manually_edited,
+        edited_at=segment.edited_at,
+        words=[
+            SegmentWord(
+                start=word.start,
+                end=word.end,
+                text=word.text,
+                confidence=word.confidence,
+            )
+            for word in segment.words
+        ],
+    )

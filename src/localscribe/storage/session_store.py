@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from ..models import LiveSession, TranscriptResult, utcnow_iso
+from ..models import LiveSession, TranscriptResult, TranscriptSegment, utcnow_iso
 
 _SESSION_FILE = "session.json"
 
@@ -95,13 +96,17 @@ class SessionStore:
         duration_seconds: float,
         result: TranscriptResult,
         replace_tail_count: int = 0,
+        replacement_segments: list[TranscriptSegment] | None = None,
     ) -> LiveSession:
         session.chunk_count = max(session.chunk_count, sequence)
         session.total_audio_seconds += duration_seconds
         session.engine_name = result.engine_name
         if replace_tail_count > 0:
+            tail_segments = session.segments[-replace_tail_count:]
+            if any(segment.manually_edited for segment in tail_segments):
+                raise RuntimeError("Cannot replace manually edited live transcript segments.")
             session.segments = session.segments[:-replace_tail_count]
-        session.attach_segments(result.segments)
+        session.attach_segments(replacement_segments or result.segments)
         session.merge_speakers(result.speakers)
         session.warnings = _merge_warnings(session.warnings, result.warnings)
         return self.save(session)
@@ -111,6 +116,32 @@ class SessionStore:
         profile = session.rename_speaker(speaker_id, label)
         self.save(session)
         return profile, session
+
+    def rename_session(self, session_id: str, title: str | None):
+        session = self.get(session_id)
+        session.rename(title)
+        self.save(session)
+        return session
+
+    def update_segment_text(self, session_id: str, segment_id: str, text: str):
+        session = self.get(session_id)
+        segment = session.update_segment_text(segment_id, text)
+        self.save(session)
+        return segment, session
+
+    def clear(self, *, session_type: str | None = None, exclude_session_id: str | None = None) -> int:
+        deleted = 0
+        for session in list(self.list_recent(limit=10000)):
+            if session_type and session.session_type != session_type:
+                continue
+            if exclude_session_id and session.session_id == exclude_session_id:
+                continue
+            session_dir = self.session_dir(session.session_id)
+            if session_dir.exists():
+                shutil.rmtree(session_dir)
+            self._sessions.pop(session.session_id, None)
+            deleted += 1
+        return deleted
 
 
 def _merge_warnings(existing: list[str], incoming: list[str]) -> list[str]:

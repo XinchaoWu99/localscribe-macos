@@ -91,7 +91,7 @@ class WhisperKitServerEngine(TranscriptionEngine):
         with self._lock:
             self.runtime.ensure_running()
             multipart_fields: list[tuple[str, tuple[str | None, object, str | None] | tuple[None, str]]] = [
-                ("model", (None, self.settings.whisper_model)),
+                ("model", (None, self.runtime.request_model_name())),
                 ("response_format", (None, "verbose_json")),
                 ("temperature", (None, "0")),
                 ("timestamp_granularities[]", (None, "segment")),
