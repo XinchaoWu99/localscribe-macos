@@ -21,6 +21,8 @@ const state = {
   segmentSaveTimers: {},
 };
 
+let _isRenderingTranscript = false;
+
 const ALWAYS_ENABLE_CONTEXT_LINKING = true;
 const ALWAYS_ENABLE_POST_PROCESSING = true;
 const LOW_INPUT_WARNING = "Input level is very low. Check the selected microphone or audio source.";
@@ -1235,7 +1237,10 @@ async function saveSegmentText(segmentId, text) {
     return;
   }
 
-  delete state.segmentDrafts[segmentId];
+  const currentDraft = state.segmentDrafts[segmentId];
+  if (currentDraft === undefined || currentDraft.trim() === normalized) {
+    delete state.segmentDrafts[segmentId];
+  }
   state.session = data.session;
   setTranscriptFromSession();
   updateSessionChrome();
@@ -1446,6 +1451,7 @@ async function saveCurrentSessionTitle() {
 }
 
 function renderTranscript() {
+  _isRenderingTranscript = true;
   const transcript = state.transcript;
   const segments = transcript?.segments || [];
   const speakers = transcript?.speakers || [];
@@ -1562,6 +1568,7 @@ function renderTranscript() {
     node.innerHTML = `<strong>${escapeHtml(emptyTitle)}</strong><p>${escapeHtml(emptyBody)}</p>`;
     els.timeline.append(node);
     renderSessionHistory();
+    _isRenderingTranscript = false;
     return;
   }
 
@@ -1581,7 +1588,9 @@ function renderTranscript() {
       updateTranscriptTextFromDrafts();
     });
     editor.addEventListener("blur", () => {
-      void saveSegmentText(segment.segmentId, editor.value);
+      if (!_isRenderingTranscript) {
+        void saveSegmentText(segment.segmentId, editor.value);
+      }
     });
     editor.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -1595,6 +1604,7 @@ function renderTranscript() {
 
   restoreFocusedSegmentEditor(focusedEditor);
   renderSessionHistory();
+  _isRenderingTranscript = false;
 }
 
 function renderSessionHistory() {
