@@ -10,7 +10,7 @@ It runs in the browser on your own Mac, keeps speech recognition local, shows a 
 
 ## Release status
 
-Current release: `v0.2.1`
+Current release: `v0.2.2`
 
 LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is best treated as a serious local transcription workspace rather than a notarized consumer desktop app.
 

@@ -64,6 +64,15 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
             raise HTTPException(status_code=400, detail="chunkMillis must be an integer.") from exc
 
         session = _get_session_or_404(services, session_id)
+        await _to_thread(
+            services.post_processing_service.prepare_backend,
+            TranscriptionOptions(
+                post_process=True,
+                post_process_backend=_clean(payload.get("postProcessBackend") if payload else None),
+                post_process_model=_clean(payload.get("postProcessModel") if payload else None),
+                live=True,
+            ),
+        )
         try:
             system_audio = await _to_thread(
                 services.system_audio_service.start_capture,
@@ -89,6 +98,22 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
     @app.get("/api/postprocess/catalog")
     async def postprocess_catalog() -> dict[str, object]:
         return services.post_processing_service.catalog()
+
+    @app.post("/api/postprocess/prepare")
+    async def prepare_postprocess(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, object]:
+        status = await _to_thread(
+            services.post_processing_service.prepare_backend,
+            TranscriptionOptions(
+                post_process=True,
+                post_process_backend=_clean(payload.get("backend") if payload else None),
+                post_process_model=_clean(payload.get("model") if payload else None),
+                live=True,
+            ),
+        )
+        return {
+            "postProcessing": status,
+            "catalog": services.post_processing_service.catalog(),
+        }
 
     @app.patch("/api/settings/live")
     async def update_live_settings(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, object]:

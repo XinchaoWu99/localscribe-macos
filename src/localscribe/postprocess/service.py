@@ -4,8 +4,14 @@ from dataclasses import dataclass
 import difflib
 import importlib
 import json
+import os
+from pathlib import Path
 import re
+import shutil
+import signal
+import subprocess
 import threading
+import time
 from typing import Protocol
 
 import httpx
@@ -254,6 +260,8 @@ class LocalPostProcessingService:
         recent_segments: int = 4,
         max_context_chars: int = 600,
         ollama_base_url: str = "http://127.0.0.1:11434",
+        ollama_binary: str | None = None,
+        runtime_dir: Path | None = None,
         backend_override: PostProcessorBackend | None = None,
     ) -> None:
         self.enabled = enabled
@@ -263,12 +271,57 @@ class LocalPostProcessingService:
         self.recent_segments = recent_segments
         self.max_context_chars = max_context_chars
         self.ollama_base_url = ollama_base_url.rstrip("/")
+        configured_ollama_binary = (ollama_binary or "").strip()
+        self.ollama_binary = configured_ollama_binary or shutil.which("ollama")
+        self.runtime_dir = runtime_dir
+        self.ollama_log_path = runtime_dir / "ollama.log" if runtime_dir is not None else None
         self._backend_override = backend_override
         self._backend_cache: dict[tuple[str, str | None], PostProcessorBackend] = {}
         self._last_warning: str | None = None
+        self._ollama_process: subprocess.Popen[str] | None = None
+        self._ollama_started_at: float | None = None
+        self._ollama_log_handle = None
 
     def status(self) -> dict[str, object]:
         backend_name, model = self._resolve_selection()
+        return self._status_for_selection(backend_name, model)
+
+    def prepare_backend(self, options: TranscriptionOptions | None = None) -> dict[str, object]:
+        backend_name, model = self._resolve_selection(options)
+        if backend_name == "ollama":
+            self._ensure_ollama_running()
+        return self._status_for_selection(backend_name, model)
+
+    def shutdown(self) -> None:
+        process = self._ollama_process
+        if process is None:
+            self._close_ollama_log_handle()
+            return
+
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            process.terminate()
+
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                process.kill()
+            process.wait(timeout=2)
+
+        self._ollama_process = None
+        self._ollama_started_at = None
+        self._close_ollama_log_handle()
+
+    def _status_for_selection(self, backend_name: str, model: str | None) -> dict[str, object]:
+        self._refresh_ollama_process_state()
         backend_status = self._backend_for_selection(backend_name, model).status()
         warning = backend_status.get("warning") or self._last_warning
         return {
@@ -419,6 +472,84 @@ class LocalPostProcessingService:
         backend_name = (requested_backend or "none").strip().lower() or "none"
         model = self._default_model_for_backend(backend_name, requested_model)
         return backend_name, model
+
+    def _ensure_ollama_running(self) -> bool:
+        self._refresh_ollama_process_state()
+        if self._probe_ollama():
+            self._last_warning = None
+            return True
+
+        if not self.ollama_binary:
+            self._last_warning = "Ollama is not installed or not available on PATH, so LocalScribe could not start it automatically."
+            return False
+
+        process = self._ollama_process
+        if process is None:
+            if self.ollama_log_path is not None:
+                self.ollama_log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._ollama_log_handle = self.ollama_log_path.open("w", encoding="utf-8")
+            try:
+                self._ollama_process = subprocess.Popen(
+                    [self.ollama_binary, "serve"],
+                    stdout=self._ollama_log_handle or subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                    env=os.environ.copy(),
+                )
+                self._ollama_started_at = time.time()
+            except OSError as exc:
+                self._close_ollama_log_handle()
+                self._last_warning = f"Could not start Ollama automatically: {exc}"
+                return False
+            process = self._ollama_process
+
+        deadline = time.time() + min(max(self.timeout_seconds, 1.5), 12.0)
+        while time.time() < deadline:
+            if self._probe_ollama():
+                self._last_warning = None
+                return True
+            if process is not None and process.poll() is not None:
+                break
+            time.sleep(0.25)
+
+        self._refresh_ollama_process_state()
+        if self._last_warning:
+            return False
+        self._last_warning = "Ollama was started automatically but is not accepting connections yet."
+        return False
+
+    def _probe_ollama(self) -> bool:
+        try:
+            with httpx.Client(timeout=min(self.timeout_seconds, 2.5)) as client:
+                response = client.get(f"{self.ollama_base_url}/api/tags")
+                response.raise_for_status()
+            return True
+        except Exception as exc:
+            self._last_warning = str(exc)
+            return False
+
+    def _refresh_ollama_process_state(self) -> None:
+        process = self._ollama_process
+        if process is None:
+            return
+        return_code = process.poll()
+        if return_code is None:
+            return
+
+        self._ollama_process = None
+        self._ollama_started_at = None
+        self._close_ollama_log_handle()
+        if return_code != 0:
+            self._last_warning = f"Ollama exited with code {return_code}."
+
+    def _close_ollama_log_handle(self) -> None:
+        if self._ollama_log_handle is None:
+            return
+        try:
+            self._ollama_log_handle.close()
+        finally:
+            self._ollama_log_handle = None
 
     def _default_model_for_backend(self, backend_name: str, requested_model: str | None = None) -> str | None:
         model = (requested_model or "").strip() or None

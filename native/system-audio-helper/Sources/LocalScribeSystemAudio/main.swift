@@ -345,9 +345,7 @@ final class SystemAudioCaptureController: NSObject, SCStreamDelegate, SCStreamOu
         guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else {
             throw HelperError.audio("Missing format description in sample buffer.")
         }
-        guard let inputFormat = AVAudioFormat(cmAudioFormatDescription: description) else {
-            throw HelperError.audio("Could not derive an AVAudioFormat from the sample buffer.")
-        }
+        let inputFormat = AVAudioFormat(cmAudioFormatDescription: description)
 
         let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frameCount) else {

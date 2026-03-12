@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 
+import httpx
 from localscribe.models import LiveSession, SegmentWord, TranscriptResult, TranscriptSegment, TranscriptionOptions
 from localscribe.postprocess import LocalPostProcessingService
 from localscribe.postprocess.service import MLXPostProcessorBackend
@@ -220,6 +222,76 @@ def test_post_processing_rewrites_previous_tail_and_current_chunk() -> None:
     assert plan.replacement_segments[0].text == "AcmeSoft launched the update."
     assert plan.result.segments[0].text == "It reached the beta team yesterday."
     assert backend.calls
+
+
+def test_prepare_backend_autostarts_ollama(monkeypatch, tmp_path) -> None:
+    state = {
+        "ready": False,
+        "launch_cmd": None,
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"models": []}
+
+    class FakeClient:
+        def __init__(self, timeout):  # noqa: ANN001
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        def get(self, url: str):  # noqa: ARG002
+            if not state["ready"]:
+                raise httpx.ConnectError("Connection refused")
+            return FakeResponse()
+
+    class FakePopen:
+        def __init__(self, cmd, stdout, stderr, text, start_new_session, env):  # noqa: ANN001
+            state["launch_cmd"] = cmd
+            state["ready"] = True
+            self.pid = 2468
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    service = LocalPostProcessingService(
+        enabled=True,
+        backend_name="ollama",
+        runtime_dir=tmp_path,
+        ollama_binary="/opt/homebrew/bin/ollama",
+    )
+
+    status = service.prepare_backend(
+        TranscriptionOptions(
+            post_process=True,
+            post_process_backend="ollama",
+            post_process_model="qwen2.5:3b-instruct",
+            live=True,
+        )
+    )
+
+    assert state["launch_cmd"] == ["/opt/homebrew/bin/ollama", "serve"]
+    assert status["ready"] is True
+    assert status["backend"] == "ollama"
 
 
 def test_post_processing_skips_manually_edited_tail_rewrites() -> None:

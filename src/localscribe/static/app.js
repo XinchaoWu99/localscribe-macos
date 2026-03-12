@@ -472,6 +472,39 @@ async function refreshPostProcessCatalog(showErrors = false) {
   }
 }
 
+async function preparePostProcessingForLiveStart() {
+  const backend = selectedCleanupBackend();
+  if (!backend || backend === "none") {
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/postprocess/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        backend,
+        model: selectedCleanupModel(),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not prepare the selected AI assistant.");
+    }
+    state.status = {
+      ...(state.status || {}),
+      postProcessing: data.postProcessing || state.status?.postProcessing || null,
+    };
+    if (data.catalog) {
+      state.postProcessCatalog = data.catalog;
+    }
+    renderPostProcessControls();
+    renderOllamaStatus();
+  } catch (error) {
+    console.warn("Could not prepare live post-processing.", error);
+  }
+}
+
 async function refreshSystemAudioStatus(showErrors = false) {
   try {
     const params = new URLSearchParams();
@@ -658,7 +691,7 @@ function renderSystemAudioPanel() {
     els.systemAudioSummary.textContent =
       "LocalScribe is checking whether the native ScreenCaptureKit helper is available for current Mac sound output.";
     els.systemAudioCommand.textContent = "";
-    els.systemAudioDetail.textContent = "If the helper is available, Start Mac Output will attach it to the current live session.";
+    els.systemAudioDetail.textContent = "If needed, LocalScribe can prepare the helper automatically before Mac output capture starts.";
     els.copySystemAudioCommandButton.disabled = true;
     return;
   }
@@ -684,18 +717,18 @@ function renderSystemAudioPanel() {
     els.systemAudioSummary.textContent =
       "Use Start Mac Output to capture whatever is currently playing through this Mac without depending on browser audio support.";
   } else {
-    els.systemAudioPill.textContent = "Build needed";
-    els.systemAudioHeadline.textContent = "Mac output needs one setup step";
+    els.systemAudioPill.textContent = "Auto-prepare";
+    els.systemAudioHeadline.textContent = "Mac output helper will be prepared automatically";
     els.systemAudioSummary.textContent =
-      "Direct Mac-output capture is available here, but the native helper has to be built once on this machine first.";
+      "On the first Mac output capture, LocalScribe will build the native helper in the backend and then start streaming automatically.";
   }
 
   els.systemAudioCommand.textContent = command || "";
   const troubleshooting = helperReady
     ? "The helper will request Screen Recording permission the first time macOS needs it."
-    : "Run the build command above in Terminal. If Swift build fails, update or switch Xcode / Command Line Tools so the active Swift compiler matches the active macOS SDK, then refresh this panel.";
+    : "The first start can take a moment while Swift builds the helper. If that automatic build fails, use the command above for debugging and make sure the active Swift compiler matches the active macOS SDK.";
   els.systemAudioDetail.textContent = uiMessage || helper.warning || troubleshooting;
-  els.copySystemAudioCommandButton.textContent = helperReady ? "Copy Launch Command" : "Copy Setup Command";
+  els.copySystemAudioCommandButton.textContent = helperReady ? "Copy Launch Command" : "Copy Diagnostic Command";
   els.copySystemAudioCommandButton.disabled = !command;
 }
 
@@ -902,7 +935,7 @@ function renderModelControls() {
 }
 
 function renderModelInstallProgress(install) {
-  const show = Boolean(install?.running || install?.warning || (install?.logTail && install.logTail.length));
+  const show = Boolean(install?.running || install?.warning);
   els.modelInstallProgress.hidden = !show;
   if (!show) {
     els.modelInstallTrack.classList.remove("is-indeterminate");
@@ -1115,8 +1148,16 @@ async function startMic() {
 
   try {
     state.systemAudioUiMessage = "";
+    await preparePostProcessingForLiveStart();
     const sourceMode = els.captureSource.value;
     if (sourceMode === "mac-system-audio") {
+      state.systemAudioUiMessage =
+        "Preparing native Mac sound output capture. The first start can take a moment while LocalScribe builds the helper.";
+      els.livePill.textContent = "Preparing";
+      els.startButton.disabled = true;
+      els.stopButton.disabled = true;
+      renderSystemAudioPanel();
+      updateSessionChrome();
       await startSystemAudioCapture();
       return;
     }
@@ -1161,6 +1202,8 @@ async function startSystemAudioCapture() {
       prompt: els.promptInput.value.trim() || null,
       diarize: els.diarizeToggle.checked,
       chunkMillis: configuredChunkMillis(),
+      postProcessBackend: selectedCleanupBackend(),
+      postProcessModel: selectedCleanupModel(),
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -1190,7 +1233,12 @@ async function startSystemAudioCapture() {
 }
 
 function handleSystemAudioStartFailure(message) {
-  state.systemAudioUiMessage = `${message} Build the helper once from the command below, then try Start Mac Output again.`;
+  state.systemAudioUiMessage =
+    `${message} LocalScribe already tried to prepare the helper automatically. Review the details below for the failed build or launch step.`;
+  els.livePill.textContent = "Idle";
+  els.startButton.disabled = false;
+  els.stopButton.disabled = true;
+  updateSessionChrome();
   renderSystemAudioPanel();
   scrollToWorkflowCard(els.dialInCard);
 }

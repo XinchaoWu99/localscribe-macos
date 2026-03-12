@@ -25,7 +25,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             services.shutdown()
 
-    app = FastAPI(title="LocalScribe", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="LocalScribe", version="0.2.2", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.state.services = services
     register_routes(app, services)

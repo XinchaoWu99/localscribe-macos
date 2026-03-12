@@ -36,6 +36,7 @@ class AppServices:
 
     def shutdown(self) -> None:
         self.system_audio_service.shutdown()
+        self.post_processing_service.shutdown()
         shutdown = getattr(self.engine, "shutdown", None)
         if callable(shutdown):
             shutdown()
@@ -80,6 +81,7 @@ def build_services(settings: Settings, static_dir: Path) -> AppServices:
         recent_segments=settings.postprocess_recent_segments,
         max_context_chars=settings.postprocess_max_context_chars,
         ollama_base_url=settings.ollama_url,
+        runtime_dir=settings.runtime_dir,
     )
     streaming_service = StreamingService(
         settings=settings,

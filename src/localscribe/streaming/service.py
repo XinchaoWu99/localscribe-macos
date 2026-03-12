@@ -75,6 +75,7 @@ class StreamingService:
 
     def transcribe_upload(self, request: UploadTranscriptionRequest) -> tuple[TranscriptResult, LiveSession]:
         self._enforce_upload_limit(len(request.raw_bytes))
+        self.post_processing_service.prepare_backend(request.options)
         paths = self.file_store.create_upload_paths(_suffix_for_filename(request.filename))
         paths.raw_path.write_bytes(request.raw_bytes)
         normalize_audio(paths.raw_path, paths.normalized_path)
@@ -123,6 +124,7 @@ class StreamingService:
 
     def ingest_live_chunk(self, session_id: str, request: LiveChunkRequest) -> tuple[TranscriptResult, LiveSession]:
         session = self.get_session(session_id)
+        self.post_processing_service.prepare_backend(request.options)
         extension = _suffix_for_mime(request.mime_type)
         if extension == ".bin":
             extension = _suffix_for_bytes(request.raw_bytes)

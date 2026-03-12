@@ -16,6 +16,7 @@ class NativeSystemAudioService:
         self.project_root = project_root
         self.package_dir = project_root / "native" / "system-audio-helper"
         configured_binary = (settings.system_audio_helper_binary or "").strip()
+        self._uses_custom_binary = bool(configured_binary)
         self.binary_path = (
             Path(configured_binary).expanduser()
             if configured_binary
@@ -42,7 +43,7 @@ class NativeSystemAudioService:
         chunk_millis: int | None = None,
     ) -> dict[str, object]:
         self._refresh_process_state()
-        available = self.binary_path.exists() and os.access(self.binary_path, os.X_OK)
+        available = self._binary_is_ready()
         launch_command = self.command_string(
             session_id=session_id,
             language=language,
@@ -52,9 +53,7 @@ class NativeSystemAudioService:
         )
         warning = self._last_error
         if not available:
-            warning = warning or (
-                "Native Mac sound capture is not ready yet. Build the ScreenCaptureKit helper first."
-            )
+            warning = warning or self._missing_binary_message()
         return {
             "available": available,
             "running": bool(self._process),
@@ -91,12 +90,7 @@ class NativeSystemAudioService:
                 )
             raise RuntimeError("Native Mac sound capture is already running for another session.")
 
-        if not self.binary_path.exists():
-            raise RuntimeError(
-                "Native Mac sound capture helper is missing. Build it with `swift build -c release` in native/system-audio-helper."
-            )
-        if not os.access(self.binary_path, os.X_OK):
-            raise RuntimeError("Native Mac sound capture helper exists but is not executable.")
+        self._ensure_binary_ready()
 
         command = self.command(
             session_id=session_id,
@@ -138,6 +132,74 @@ class NativeSystemAudioService:
             diarize=diarize,
             chunk_millis=chunk_millis,
         )
+
+    def _ensure_binary_ready(self) -> None:
+        if self._binary_is_ready():
+            return
+
+        if self._uses_custom_binary:
+            raise RuntimeError(self._missing_binary_message())
+
+        self._build_helper()
+
+        if not self.binary_path.exists():
+            self._last_error = "Native Mac sound capture helper build finished but no executable was produced."
+            raise RuntimeError(self._last_error)
+        if not os.access(self.binary_path, os.X_OK):
+            self._last_error = "Native Mac sound capture helper was built but is not executable."
+            raise RuntimeError(self._last_error)
+
+    def _build_helper(self) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+
+        try:
+            completed = subprocess.run(
+                ["swift", "build", "-c", "release"],
+                cwd=self.package_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            self._last_error = f"Could not build native Mac sound capture helper: {exc}"
+            raise RuntimeError(self._last_error) from exc
+
+        log_output = "\n".join(
+            part.rstrip()
+            for part in (completed.stdout, completed.stderr)
+            if part and part.strip()
+        ).strip()
+        if log_output:
+            self.log_path.write_text(f"{log_output}\n", encoding="utf-8")
+
+        if completed.returncode != 0:
+            summary = self._summarize_build_failure(log_output)
+            self._last_error = f"Native Mac sound capture helper build failed. {summary}".strip()
+            raise RuntimeError(self._last_error)
+
+        self._last_error = None
+
+    def _binary_is_ready(self) -> bool:
+        return self.binary_path.exists() and os.access(self.binary_path, os.X_OK)
+
+    def _missing_binary_message(self) -> str:
+        if self._uses_custom_binary:
+            return f"Native Mac sound capture helper is not available at {self.binary_path}."
+        return (
+            "Native Mac sound capture helper is not built yet. LocalScribe will try to build it automatically the "
+            "first time you start Mac output capture."
+        )
+
+    def _summarize_build_failure(self, log_output: str) -> str:
+        if not log_output:
+            return "Review the helper build log for details."
+
+        for line in reversed(log_output.splitlines()):
+            text = line.strip()
+            if text:
+                return text
+        return "Review the helper build log for details."
 
     def stop_capture(self) -> dict[str, object]:
         self._refresh_process_state()
