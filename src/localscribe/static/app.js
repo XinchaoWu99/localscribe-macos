@@ -21,6 +21,8 @@ const state = {
   segmentSaveTimers: {},
 };
 
+let _isRenderingTranscript = false;
+
 const ALWAYS_ENABLE_CONTEXT_LINKING = true;
 const ALWAYS_ENABLE_POST_PROCESSING = true;
 
@@ -1206,7 +1208,10 @@ async function saveSegmentText(segmentId, text) {
     return;
   }
 
-  delete state.segmentDrafts[segmentId];
+  const currentDraft = state.segmentDrafts[segmentId];
+  if (currentDraft === undefined || currentDraft.trim() === normalized) {
+    delete state.segmentDrafts[segmentId];
+  }
   state.session = data.session;
   setTranscriptFromSession();
   updateSessionChrome();
@@ -1271,6 +1276,7 @@ function setTranscriptFromSession() {
 }
 
 function renderTranscript() {
+  _isRenderingTranscript = true;
   const transcript = state.transcript;
   const segments = transcript?.segments || [];
   const speakers = transcript?.speakers || [];
@@ -1354,6 +1360,7 @@ function renderTranscript() {
       "<strong>No transcript yet</strong><p>Use the live capture controls to start streaming audio into the local transcription pipeline. When segments arrive, you can edit them here live.</p>";
     els.timeline.append(node);
     renderSessionHistory();
+    _isRenderingTranscript = false;
     return;
   }
 
@@ -1373,7 +1380,9 @@ function renderTranscript() {
       updateTranscriptTextFromDrafts();
     });
     editor.addEventListener("blur", () => {
-      void saveSegmentText(segment.segmentId, editor.value);
+      if (!_isRenderingTranscript) {
+        void saveSegmentText(segment.segmentId, editor.value);
+      }
     });
     editor.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -1387,6 +1396,7 @@ function renderTranscript() {
 
   restoreFocusedSegmentEditor(focusedEditor);
   renderSessionHistory();
+  _isRenderingTranscript = false;
 }
 
 function renderSessionHistory() {

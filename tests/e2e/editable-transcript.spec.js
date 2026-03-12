@@ -1,5 +1,30 @@
 const { test, expect } = require("@playwright/test");
 
+test("focused editor retains in-progress draft when a live chunk triggers re-render", async ({ page, request }) => {
+  const title = `E2E draft retention ${Date.now()}`;
+  const sessionId = await createNamedSession(request, title);
+
+  await page.goto("/");
+  await openSessionByTitle(page, title);
+
+  await ingestLiveChunk(page, sessionId, 1, buildToneWavBase64({ durationMs: 1400 }));
+  await page.reload();
+  await openSessionByTitle(page, title);
+
+  const editors = page.locator(".segment-editor");
+  await expect(editors).toHaveCount(1);
+
+  const draftText = "User is still typing this sentence";
+  await editors.first().focus();
+  await editors.first().fill(draftText);
+
+  await ingestLiveChunk(page, sessionId, 2, buildToneWavBase64({ durationMs: 1400, frequencyHz: 660 }));
+
+  const allEditors = page.locator(".segment-editor");
+  await expect(allEditors).toHaveCount(2);
+  await expect(allEditors.nth(0)).toHaveValue(draftText);
+});
+
 test("editable transcript panel keeps saved edits while new live chunks arrive", async ({ page, request }) => {
   const title = `E2E editable panel ${Date.now()}`;
   const sessionId = await createNamedSession(request, title);
