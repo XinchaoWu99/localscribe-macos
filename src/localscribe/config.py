@@ -10,6 +10,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8765
     engine: str = "auto"
+    system_audio_helper_binary: str | None = None
     whisper_server_url: str = "http://127.0.0.1:8080/v1"
     whisper_model: str = "large-v3-turbo"
     whisperkit_binary: str | None = None
@@ -60,6 +61,7 @@ class Settings:
             host=os.getenv("LOCALSCRIBE_HOST", "127.0.0.1"),
             port=int(os.getenv("LOCALSCRIBE_PORT", "8765")),
             engine=os.getenv("LOCALSCRIBE_ENGINE", "auto"),
+            system_audio_helper_binary=os.getenv("LOCALSCRIBE_SYSTEM_AUDIO_HELPER_BINARY") or None,
             whisper_server_url=os.getenv("LOCALSCRIBE_WHISPER_SERVER_URL", "http://127.0.0.1:8080/v1"),
             whisper_model=os.getenv("LOCALSCRIBE_WHISPER_MODEL", "large-v3-turbo"),
             whisperkit_binary=os.getenv("LOCALSCRIBE_WHISPERKIT_BINARY") or None,

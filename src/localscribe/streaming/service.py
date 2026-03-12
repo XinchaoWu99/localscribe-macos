@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
-from ..audio import audio_level_stats, normalize_audio, probe_duration_seconds
+from ..audio import apply_volume_gain, audio_level_stats, normalize_audio, probe_duration_seconds
 from ..config import Settings
 from ..context import ContextRefinementService
 from ..diarization import DiarizationService
@@ -22,6 +23,11 @@ class StreamingService:
     LOW_INPUT_WARNING_RMS_NORMALIZED = 0.0015
     LOW_INPUT_WARNING_PEAK_NORMALIZED = 0.015
     LOW_INPUT_WARNING = "Input level is very low. Check the selected microphone or audio source."
+    QUIET_INPUT_BOOST_WARNING = "Boosted a very quiet live input before transcription."
+    LIVE_TURN_END_SILENCE_SECONDS = 0.55
+    LIVE_SENTENCE_END_SILENCE_SECONDS = 0.22
+    LIVE_AUTO_GAIN_TARGET_PEAK_NORMALIZED = 0.12
+    LIVE_AUTO_GAIN_MAX_MULTIPLIER = 45.0
 
     def __init__(
         self,
@@ -128,7 +134,11 @@ class StreamingService:
 
         normalize_audio(raw_path, normalized_path)
         duration_seconds = probe_duration_seconds(normalized_path)
+        chunk_end_seconds = request.options.offset_seconds + duration_seconds
         level_stats = audio_level_stats(normalized_path)
+        boost_applied = self._boost_quiet_live_audio(normalized_path, level_stats)
+        if boost_applied:
+            level_stats = audio_level_stats(normalized_path)
         speech_windows = self.diarization_service.detect_speech(
             normalized_path,
             offset_seconds=request.options.offset_seconds,
@@ -155,6 +165,8 @@ class StreamingService:
         else:
             effective_options = self.context_refinement_service.build_live_options(session, request.options)
             result = self.engine.transcribe_live_chunk(str(normalized_path), effective_options, session)
+        if boost_applied:
+            result.warnings = [self.QUIET_INPUT_BOOST_WARNING, *result.warnings]
         result = self.diarization_service.process_live_result(
             session,
             normalized_path,
@@ -171,13 +183,39 @@ class StreamingService:
         )
         plan.result = post_process_plan.result
         plan.replace_tail_count = post_process_plan.replace_tail_count
+        current_chunk_segments = post_process_plan.result.segments
+        corrected_tail_segments: list = []
+        if post_process_plan.replacement_segments is not None:
+            current_count = len(post_process_plan.result.segments)
+            if current_count > 0:
+                corrected_tail_segments = post_process_plan.replacement_segments[:-current_count]
+                current_chunk_segments = post_process_plan.replacement_segments[-current_count:]
+            else:
+                corrected_tail_segments = list(post_process_plan.replacement_segments)
+                current_chunk_segments = []
+
+        finalized_segments, draft_segments, visible_segments = self._segment_live_caption_flow(
+            session,
+            post_process_plan.result.__class__(
+                engine_name=post_process_plan.result.engine_name,
+                segments=list(current_chunk_segments),
+                speakers=post_process_plan.result.speakers,
+                duration_seconds=post_process_plan.result.duration_seconds,
+                detected_language=post_process_plan.result.detected_language,
+                warnings=list(post_process_plan.result.warnings),
+            ),
+            speech_windows=speech_windows,
+            chunk_end_seconds=chunk_end_seconds,
+        )
+        plan.result.segments = visible_segments
         session = self.session_store.apply_live_result(
             session,
             request.sequence,
             duration_seconds,
             plan.result,
+            draft_segments=draft_segments,
             replace_tail_count=plan.replace_tail_count,
-            replacement_segments=post_process_plan.replacement_segments,
+            replacement_segments=[*corrected_tail_segments, *finalized_segments],
         )
         return plan.result, session
 
@@ -215,6 +253,125 @@ class StreamingService:
             and level_stats.get("peakNormalized", 0.0) < self.LOW_INPUT_WARNING_PEAK_NORMALIZED
         )
 
+    def _boost_quiet_live_audio(self, path: Path, level_stats: dict[str, float]) -> bool:
+        peak = level_stats.get("peakNormalized", 0.0)
+        if peak <= 0.0:
+            return False
+        if peak >= self.LIVE_VAD_FALLBACK_PEAK_NORMALIZED:
+            return False
+
+        multiplier = min(
+            self.LIVE_AUTO_GAIN_MAX_MULTIPLIER,
+            self.LIVE_AUTO_GAIN_TARGET_PEAK_NORMALIZED / peak,
+        )
+        if multiplier <= 1.5:
+            return False
+
+        apply_volume_gain(path, multiplier)
+        return True
+
+    def _segment_live_caption_flow(
+        self,
+        session: LiveSession,
+        result: TranscriptResult,
+        *,
+        speech_windows,
+        chunk_end_seconds: float,
+    ) -> tuple[list, list, list]:
+        finalized_segments: list = []
+        draft_segments = [self._clone_segment(segment) for segment in session.draft_segments]
+        pending = draft_segments[-1] if draft_segments else None
+        visible_segments: list = []
+
+        incoming_segments = [self._clone_segment(segment, is_final=False) for segment in result.segments if segment.text.strip()]
+        for incoming in incoming_segments:
+            if pending is None:
+                pending = incoming
+                continue
+
+            if self._can_continue_live_turn(pending, incoming):
+                pending = self._merge_live_turn(pending, incoming)
+                continue
+
+            finalized_segments.append(self._finalize_segment(pending))
+            pending = incoming
+
+        draft_segments = [pending] if pending is not None else []
+
+        if not incoming_segments and draft_segments and self._should_finalize_live_turn(
+            draft_segments[-1],
+            speech_windows=speech_windows,
+            chunk_end_seconds=chunk_end_seconds,
+        ):
+            finalized_segments.append(self._finalize_segment(draft_segments[-1]))
+            draft_segments = []
+        elif draft_segments and self._should_finalize_live_turn(
+            draft_segments[-1],
+            speech_windows=speech_windows,
+            chunk_end_seconds=chunk_end_seconds,
+        ):
+            finalized_segments.append(self._finalize_segment(draft_segments[-1]))
+            draft_segments = []
+
+        visible_segments = [*finalized_segments, *[self._clone_segment(segment, is_final=False) for segment in draft_segments]]
+        return finalized_segments, draft_segments, visible_segments
+
+    def _should_finalize_live_turn(self, segment, *, speech_windows, chunk_end_seconds: float) -> bool:
+        if not segment.text.strip():
+            return False
+        if speech_windows == []:
+            return True
+        if speech_windows is None:
+            return _looks_sentence_complete(segment.text)
+
+        trailing_silence = max(0.0, chunk_end_seconds - max(window.end for window in speech_windows))
+        if trailing_silence >= self.LIVE_TURN_END_SILENCE_SECONDS:
+            return True
+        if trailing_silence >= self.LIVE_SENTENCE_END_SILENCE_SECONDS and _looks_sentence_complete(segment.text):
+            return True
+        return False
+
+    def _merge_live_turn(self, current, incoming):
+        merged = self._clone_segment(current, is_final=False)
+        merged.end = max(current.end, incoming.end)
+        merged.text = _merge_live_text(current.text, incoming.text)
+        merged.words = [*current.words, *incoming.words]
+        confidence_values = [value for value in (current.confidence, incoming.confidence) if value is not None]
+        merged.confidence = sum(confidence_values) / len(confidence_values) if confidence_values else None
+        merged.speaker_id = incoming.speaker_id or current.speaker_id
+        merged.speaker_name = incoming.speaker_name or current.speaker_name
+        return merged
+
+    def _can_continue_live_turn(self, current, incoming) -> bool:
+        turn_segmenter = getattr(self.diarization_service, "turn_segmenter", None)
+        if turn_segmenter is not None and hasattr(turn_segmenter, "can_merge"):
+            return turn_segmenter.can_merge(current, incoming)
+        return (
+            (not current.speaker_id or not incoming.speaker_id or current.speaker_id == incoming.speaker_id)
+            and max(0.0, incoming.start - current.end) <= 0.85
+        )
+
+    def _finalize_segment(self, segment):
+        finalized = self._clone_segment(segment, is_final=True)
+        finalized.source = "live"
+        return finalized
+
+    def _clone_segment(self, segment, *, is_final=None):
+        return segment.__class__(
+            segment_id=segment.segment_id,
+            start=segment.start,
+            end=segment.end,
+            text=segment.text,
+            confidence=segment.confidence,
+            speaker_id=segment.speaker_id,
+            speaker_name=segment.speaker_name,
+            is_final=segment.is_final if is_final is None else is_final,
+            source=segment.source,
+            manually_edited=segment.manually_edited,
+            edited_at=segment.edited_at,
+            words=list(segment.words),
+        )
+
 
 def _suffix_for_filename(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
@@ -250,3 +407,22 @@ def _suffix_for_bytes(raw_chunk: bytes) -> str:
     if raw_chunk.startswith(b"ID3") or (len(raw_chunk) > 2 and raw_chunk[0] == 0xFF and (raw_chunk[1] & 0xE0) == 0xE0):
         return ".mp3"
     return ".bin"
+
+
+_SENTENCE_END_RE = re.compile(r'[.!?]["\')\]]?\s*$')
+
+
+def _looks_sentence_complete(text: str) -> bool:
+    return bool(_SENTENCE_END_RE.search(text.strip()))
+
+
+def _merge_live_text(left: str, right: str) -> str:
+    if not left:
+        return right
+    if not right:
+        return left
+    if left.endswith((" ", "\n")):
+        return f"{left}{right}"
+    if right.startswith((",", ".", "!", "?", ";", ":", "'", '"')):
+        return f"{left}{right}"
+    return f"{left} {right}"

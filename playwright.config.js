@@ -3,6 +3,9 @@ const path = require("node:path");
 const { defineConfig } = require("@playwright/test");
 
 const edgeExecutablePath = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
+const testHost = process.env.LOCALSCRIBE_TEST_HOST || "127.0.0.1";
+const testPort = Number.parseInt(process.env.LOCALSCRIBE_TEST_PORT || process.env.LOCALSCRIBE_PORT || "8770", 10);
+const baseURL = `http://${testHost}:${testPort}`;
 
 module.exports = defineConfig({
   testDir: "./tests/e2e",
@@ -14,7 +17,7 @@ module.exports = defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:8770",
+    baseURL,
     browserName: "chromium",
     headless: true,
     launchOptions: fs.existsSync(edgeExecutablePath)
@@ -25,6 +28,8 @@ module.exports = defineConfig({
     command: [
       "LOCALSCRIBE_ENGINE=mock",
       "LOCALSCRIBE_DATA_DIR=.playwright-data",
+      `LOCALSCRIBE_HOST=${testHost}`,
+      `LOCALSCRIBE_PORT=${testPort}`,
       "LOCALSCRIBE_ENABLE_VAD=0",
       "LOCALSCRIBE_ENABLE_CONTEXT_LINKING=0",
       "LOCALSCRIBE_ENABLE_POST_PROCESSING=0",
@@ -33,15 +38,11 @@ module.exports = defineConfig({
       "-m",
       "uvicorn",
       "localscribe.main:app",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "8770",
       "--app-dir",
       "src",
     ].join(" "),
     cwd: path.resolve(__dirname),
-    url: "http://127.0.0.1:8770",
+    url: `${baseURL}/api/status`,
     reuseExistingServer: true,
     timeout: 45_000,
   },

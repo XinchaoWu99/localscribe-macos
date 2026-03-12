@@ -202,6 +202,7 @@ class LiveSession:
     title: str | None = None
     warnings: list[str] = field(default_factory=list)
     segments: list[TranscriptSegment] = field(default_factory=list)
+    draft_segments: list[TranscriptSegment] = field(default_factory=list)
     speakers: dict[str, SpeakerProfile] = field(default_factory=dict)
     speaker_embeddings: dict[str, object] = field(default_factory=dict)
     speaker_counts: dict[str, int] = field(default_factory=dict)
@@ -209,6 +210,16 @@ class LiveSession:
     def attach_segments(self, segments: list[TranscriptSegment]) -> None:
         self.segments.extend(segments)
         self.segments.sort(key=lambda item: (item.start, item.end, item.segment_id))
+
+    def replace_draft_segments(self, segments: list[TranscriptSegment]) -> None:
+        self.draft_segments = list(segments)
+        self.draft_segments.sort(key=lambda item: (item.start, item.end, item.segment_id))
+
+    def timeline_segments(self) -> list[TranscriptSegment]:
+        return sorted(
+            [*self.segments, *self.draft_segments],
+            key=lambda item: (item.start, item.end, item.segment_id),
+        )
 
     def merge_speakers(self, speakers: list[SpeakerProfile]) -> None:
         for speaker in speakers:
@@ -263,8 +274,9 @@ class LiveSession:
             "title": self.title,
             "warnings": self.warnings,
             "segments": [segment.to_payload() for segment in self.segments],
+            "draftSegments": [segment.to_payload() for segment in self.draft_segments],
             "speakers": [speaker.to_payload() for speaker in self.speakers.values()],
-            "text": "\n".join(segment.text for segment in self.segments if segment.text),
+            "text": "\n".join(segment.text for segment in self.timeline_segments() if segment.text),
         }
 
     def to_summary_payload(self) -> dict[str, object]:
@@ -277,7 +289,7 @@ class LiveSession:
             "title": self.title,
             "chunkCount": self.chunk_count,
             "totalAudioSeconds": round(self.total_audio_seconds, 3),
-            "segmentCount": len(self.segments),
+            "segmentCount": len(self.timeline_segments()),
             "speakerCount": len(self.speakers),
             "warnings": list(self.warnings),
         }
@@ -301,6 +313,14 @@ class LiveSession:
             session.segments = [
                 TranscriptSegment.from_payload(entry)
                 for entry in raw_segments
+                if isinstance(entry, dict)
+            ]
+
+        raw_draft_segments = payload.get("draftSegments")
+        if isinstance(raw_draft_segments, list):
+            session.draft_segments = [
+                TranscriptSegment.from_payload(entry)
+                for entry in raw_draft_segments
                 if isinstance(entry, dict)
             ]
 

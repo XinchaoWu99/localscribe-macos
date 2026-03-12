@@ -95,6 +95,7 @@ class SessionStore:
         sequence: int,
         duration_seconds: float,
         result: TranscriptResult,
+        draft_segments: list[TranscriptSegment] | None = None,
         replace_tail_count: int = 0,
         replacement_segments: list[TranscriptSegment] | None = None,
     ) -> LiveSession:
@@ -106,7 +107,8 @@ class SessionStore:
             if any(segment.manually_edited for segment in tail_segments):
                 raise RuntimeError("Cannot replace manually edited live transcript segments.")
             session.segments = session.segments[:-replace_tail_count]
-        session.attach_segments(replacement_segments or result.segments)
+        session.attach_segments(result.segments if replacement_segments is None else replacement_segments)
+        session.replace_draft_segments(draft_segments or [])
         session.merge_speakers(result.speakers)
         session.warnings = _merge_warnings(session.warnings, result.warnings)
         return self.save(session)

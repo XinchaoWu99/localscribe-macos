@@ -3,9 +3,9 @@
 LocalScribe is a browser-based transcription workspace that runs on your Mac and keeps the audio path local. It supports:
 
 - live microphone transcription
-- offline file transcription
 - speaker-aware transcript segmentation
-- optional speaker enrollment for repeated voices
+- editable live transcript review
+- local AI assistant cleanup with Ollama or MLX
 
 This guide covers the fastest and most reliable way to run LocalScribe locally on macOS.
 
@@ -15,10 +15,10 @@ If you want native macOS system-audio capture instead of browser capture, also s
 
 When LocalScribe is running locally, you can:
 
-- open the app in Safari at `http://127.0.0.1:8765`
+- open the app in Safari at `http://127.0.0.1:<your-port>` (default `8765`)
+- or on a custom port if you set `LOCALSCRIBE_PORT`
 - choose a microphone or loopback audio device
-- capture live speech and see transcript segments appear in real time
-- upload recordings for offline transcription
+- capture live speech and see captions settle into transcript turns in real time
 - copy the resulting transcript directly from the browser
 - reopen saved sessions after restarting the app
 - download transcript exports as TXT, Markdown, SRT, VTT, or JSON
@@ -82,10 +82,10 @@ source .venv/bin/activate
 ### 3. Install dependencies
 
 ```bash
-uv sync
+uv sync --extra dev
 ```
 
-This installs the web app, the local transcription runtime, Silero VAD, and supporting packages.
+This installs the web app, the local transcription runtime, Silero VAD, MLX support, and the test dependencies.
 
 ## Start the App
 
@@ -95,16 +95,22 @@ Run:
 uv run localscribe --reload
 ```
 
+Custom port example:
+
+```bash
+LOCALSCRIBE_PORT=9000 uv run localscribe --reload
+```
+
 Expected output:
 
 ```text
-Uvicorn running on http://127.0.0.1:8765
+Uvicorn running on http://127.0.0.1:<your-port>
 ```
 
 Once that appears, open:
 
 ```text
-http://127.0.0.1:8765
+http://127.0.0.1:<your-port>
 ```
 
 ## Recommended Launch Workflow
@@ -113,15 +119,15 @@ http://127.0.0.1:8765
 
 Safari is the recommended browser for microphone-based transcription.
 
-1. Open `http://127.0.0.1:8765`
+1. Open `http://127.0.0.1:<your-port>`
 2. Allow microphone access when Safari asks
-3. In the app, keep `Capture source` set to `Microphone input`
+3. In the app, keep `Capture source` set to `Live microphone`
 4. Click `Refresh Devices`
 5. Choose your microphone or loopback input
-6. Click `New Session`
-7. Click `Start Mic`
+6. Click `Create Session`
+7. Click `Start Live Mic`
 
-As you speak, transcript segments will appear in the transcript timeline.
+As you speak, the live caption line will update first, then finalize into transcript turns when the speaker pauses or another voice interrupts.
 
 ### Browser or Screen Audio
 
@@ -140,17 +146,18 @@ Practical guidance:
 Use the left-side controls:
 
 - `Capture source`: choose microphone input for the most stable path
-- `Chunk length`: shorter feels more live, longer is usually more stable
+- `Live segment length`: shorter feels more live, longer is usually more stable
 - `Language hint`: optional, for example `en`
 - `Prompt bias`: optional, useful for names, acronyms, and domain vocabulary
 - `Try to assign speakers automatically`: leave enabled if you want diarization behavior
+- `AI assistant task`: choose the local cleanup path
 
 ### Step 2. Start a session
 
 Click:
 
 ```text
-New Session
+Create Session
 ```
 
 This creates a live session on the backend.
@@ -160,75 +167,27 @@ This creates a live session on the backend.
 Click:
 
 ```text
-Start Mic
+Start Live Mic
 ```
 
 What happens next:
 
 - the browser captures audio locally
-- LocalScribe converts each short chunk into clean WAV audio
+- LocalScribe converts rolling audio into clean WAV chunks
 - the backend normalizes the audio with `ffmpeg`
 - the local Whisper engine transcribes the chunk
-- the transcript timeline updates in the browser
+- the live caption line updates in the browser
+- the caption is finalized into a transcript turn when LocalScribe detects a pause, sentence ending, or speaker interruption
 
 ### Step 4. Stop recording
 
 Click:
 
 ```text
-Stop
+Stop Capture
 ```
 
 The current session remains visible in the browser so you can continue reviewing the transcript.
-
-## Offline File Transcription
-
-Use this mode when you already have a recording.
-
-### 1. Choose a file
-
-In the `Upload A Recording` section:
-
-- drag an audio file onto the drop zone
-- or click and browse manually
-
-### 2. Run transcription
-
-Click:
-
-```text
-Transcribe File
-```
-
-The result will appear in the main transcript area with timestamps and speaker labels when available.
-
-## Speaker Enrollment
-
-Speaker enrollment is designed for recurring discussions where the same people appear often.
-
-### 1. Start or create a live session
-
-The app expects speaker enrollment to happen during an active or existing live session.
-
-### 2. Add a name
-
-Enter a name such as:
-
-- `Jane`
-- `Host`
-- `PM`
-
-### 3. Add a short voice sample
-
-Use a short clip with clear speech, ideally:
-
-- 5 to 15 seconds
-- low background noise
-- one speaker only
-
-### 4. Click `Enroll Speaker`
-
-That voice can then be matched to later transcript segments.
 
 ## Default Runtime Behavior
 
@@ -248,7 +207,7 @@ export LOCALSCRIBE_WHISPER_MODEL=large-v3-turbo
 uv run localscribe --reload
 ```
 
-That starts the browser app on `127.0.0.1:8765` and automatically launches `whisperkit-cli serve` on `127.0.0.1:8080`.
+That starts the browser app on `127.0.0.1:<your-port>` and automatically launches `whisperkit-cli serve` on `127.0.0.1:8080`.
 
 If you want the smaller fallback backend instead:
 
@@ -264,10 +223,11 @@ uv run localscribe --reload
 ### For the most reliable live transcript
 
 - use Safari
-- use `Microphone input`
+- use `Live microphone`
 - keep chunk length around `2000` to `3000` ms
 - provide a language hint if you already know it
 - add domain-specific names to the prompt field
+- keep Ollama running if you want the default AI assistant path
 
 ### For Mac speaker output transcription
 
@@ -280,7 +240,7 @@ uv run localscribe --reload
 - use a quieter room
 - keep the microphone close to the speaker
 - avoid heavily clipped audio
-- use offline file mode for longer recordings you want cleaned up
+- use `large-v3-turbo` once the pipeline is stable
 
 ## Troubleshooting
 
@@ -311,7 +271,7 @@ That is expected if WhisperKit or `faster-whisper` is downloading the model for 
 Check:
 
 - `whisperkit-cli` is installed: `whisperkit-cli serve --help`
-- the app status endpoint: `curl http://127.0.0.1:8765/api/status`
+- the app status endpoint: `curl http://127.0.0.1:<your-port>/api/status`
 - WhisperKit logs: `.localscribe-data/runtime/whisperkit-server.log`
 
 ### I want browser or tab audio, not my microphone
@@ -319,7 +279,7 @@ Check:
 Use one of these options:
 
 - choose `Browser or screen audio` in a Chromium-based browser
-- or create a loopback audio input on macOS and use `Microphone input` with that device selected
+- or create a loopback audio input on macOS and use `Live microphone` with that device selected
 
 ### I want better quality than the default model
 
@@ -346,10 +306,9 @@ If you just want the shortest reliable local path:
 
 ```bash
 cd /Users/xwu/Downloads/codex/localscribe
-uv venv
+bash scripts/bootstrap-macos.sh
 source .venv/bin/activate
-uv sync
 uv run localscribe --reload
 ```
 
-Then open `http://127.0.0.1:8765` in Safari, choose `Microphone input`, refresh devices, pick your mic, create a session, and start recording.
+Then open `http://127.0.0.1:<your-port>` in Safari, choose `Live microphone`, refresh devices, pick your mic, create a session, and start recording.

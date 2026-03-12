@@ -15,7 +15,7 @@ It uses Apple's ScreenCaptureKit to capture macOS system audio, creates or attac
 - macOS 13 or newer
 - Xcode command line tools
 - Screen Recording permission for the helper
-- A running LocalScribe server on `http://127.0.0.1:8765`
+- A running LocalScribe server on its configured host/port
 
 ## Build It
 
@@ -39,11 +39,16 @@ cd /Users/xwu/Downloads/codex/localscribe
 uv run localscribe --reload
 ```
 
+If you start LocalScribe on a custom port, either:
+
+- pass `--server http://127.0.0.1:<your-port>` to the helper
+- or export `LOCALSCRIBE_PORT=<your-port>` before launching it
+
 Then start native system-audio capture:
 
 ```bash
 cd /Users/xwu/Downloads/codex/localscribe/native/system-audio-helper
-.build/release/localscribe-system-audio --server http://127.0.0.1:8765
+.build/release/localscribe-system-audio --server http://127.0.0.1:<your-port>
 ```
 
 The helper will:
@@ -53,7 +58,7 @@ The helper will:
 3. capture system audio from the selected display
 4. stream audio chunks into `/ws/live/{session_id}`
 
-Open Safari at `http://127.0.0.1:8765` and use `Recent sessions` to open the live transcript.
+Open Safari at `http://127.0.0.1:<your-port>` and use `Recent sessions` to open the live transcript.
 
 ## Useful Flags
 

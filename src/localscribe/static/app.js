@@ -5,6 +5,7 @@ const state = {
   transcript: null,
   modelCatalog: null,
   postProcessCatalog: null,
+  systemAudio: null,
   socket: null,
   liveCapture: null,
   mediaStream: null,
@@ -16,9 +17,11 @@ const state = {
   modelActionPending: false,
   entryMode: "microphone",
   scenarioId: "meeting",
+  starterCollapsed: false,
   draftSessionId: null,
   segmentDrafts: {},
   segmentSaveTimers: {},
+  systemAudioUiMessage: "",
 };
 
 let _isRenderingTranscript = false;
@@ -28,6 +31,7 @@ const ALWAYS_ENABLE_POST_PROCESSING = true;
 const LOW_INPUT_WARNING = "Input level is very low. Check the selected microphone or audio source.";
 const NO_SPEECH_WARNING = "No speech detected in the latest audio chunk.";
 const LIVE_FALLBACK_WARNING = "Live speech fallback used because browser audio was below the default VAD gate.";
+const INPUT_LEVEL_IDLE = "Waiting for audio";
 
 const ENTRY_PRESETS = {
   microphone: {
@@ -36,9 +40,15 @@ const ENTRY_PRESETS = {
     actionLabel: "Start Live Microphone",
     target: "live",
   },
+  "mac-system-audio": {
+    label: "Current Mac sound output",
+    summary: "Best for anything already playing through this Mac, including meetings, videos, streams, and apps.",
+    actionLabel: "Start Mac Output",
+    target: "live",
+  },
   "browser-audio": {
-    label: "Browser or system audio",
-    summary: "Best for playback, livestreams, conference tabs, and other audio coming from the Mac.",
+    label: "Browser tab or shared screen audio",
+    summary: "Best for tab sharing or browser playback when the browser exposes an audio track.",
     actionLabel: "Start Browser Audio",
     target: "live",
   },
@@ -114,19 +124,16 @@ const els = {
   speakerHint: document.querySelector("#speakerHint"),
   ollamaState: document.querySelector("#ollamaState"),
   ollamaHint: document.querySelector("#ollamaHint"),
-  starterPrimaryButton: document.querySelector("#starterPrimaryButton"),
-  starterSecondaryButton: document.querySelector("#starterSecondaryButton"),
   starterModePill: document.querySelector("#starterModePill"),
   starterScenarioTitle: document.querySelector("#starterScenarioTitle"),
   starterScenarioSummary: document.querySelector("#starterScenarioSummary"),
   starterSegmentHint: document.querySelector("#starterSegmentHint"),
   starterSpeakerHint: document.querySelector("#starterSpeakerHint"),
   starterFocusHint: document.querySelector("#starterFocusHint"),
-  starterPromptPreview: document.querySelector("#starterPromptPreview"),
-  starterLaunchState: document.querySelector("#starterLaunchState"),
-  starterActionHint: document.querySelector("#starterActionHint"),
   entryModeButtons: [...document.querySelectorAll("[data-entry-mode]")],
   scenarioButtons: [...document.querySelectorAll("[data-scenario]")],
+  starterPanel: document.querySelector("#starterPanel"),
+  starterBackButton: document.querySelector("#starterBackButton"),
   sessionStatusText: document.querySelector("#sessionStatusText"),
   sessionCaption: document.querySelector("#sessionCaption"),
   liveSummary: document.querySelector("#liveSummary"),
@@ -159,6 +166,15 @@ const els = {
   cleanupModelInput: document.querySelector("#cleanupModelInput"),
   cleanupModelSuggestions: document.querySelector("#cleanupModelSuggestions"),
   cleanupHint: document.querySelector("#cleanupHint"),
+  systemAudioPanel: document.querySelector("#systemAudioPanel"),
+  systemAudioHeadline: document.querySelector("#systemAudioHeadline"),
+  systemAudioPill: document.querySelector("#systemAudioPill"),
+  systemAudioSummary: document.querySelector("#systemAudioSummary"),
+  systemAudioCommand: document.querySelector("#systemAudioCommand"),
+  systemAudioDetail: document.querySelector("#systemAudioDetail"),
+  copySystemAudioCommandButton: document.querySelector("#copySystemAudioCommandButton"),
+  inputLevelLabel: document.querySelector("#inputLevelLabel"),
+  inputLevelFill: document.querySelector("#inputLevelFill"),
   createSessionButton: document.querySelector("#createSessionButton"),
   startButton: document.querySelector("#startButton"),
   stopButton: document.querySelector("#stopButton"),
@@ -196,6 +212,7 @@ async function boot() {
   await refreshStatus();
   await refreshPostProcessCatalog();
   await refreshModelCatalog();
+  await refreshSystemAudioStatus();
   await refreshSessionHistory();
   initializeStarter();
   renderTranscript();
@@ -212,6 +229,7 @@ async function boot() {
     }
     void refreshPostProcessCatalog(false);
     void refreshModelCatalog(false);
+    void refreshSystemAudioStatus(false);
     void refreshSessionHistory();
     void refreshRemoteSession();
   }, 5000);
@@ -230,15 +248,12 @@ function bindEvents() {
     button.addEventListener("click", () => {
       const scenarioId = button.dataset.scenario;
       if (scenarioId) {
-        applyScenarioPreset(scenarioId);
+        applyScenarioPreset(scenarioId, { collapse: true, scroll: true });
       }
     });
   });
-  els.starterPrimaryButton.addEventListener("click", () => {
-    void handleStarterPrimaryAction();
-  });
-  els.starterSecondaryButton.addEventListener("click", () => {
-    handleStarterSecondaryAction();
+  els.starterBackButton.addEventListener("click", () => {
+    toggleStarterPanel(false, { scroll: true });
   });
   els.createSessionButton.addEventListener("click", () => {
     void createSession({ focusTitleInput: true });
@@ -269,6 +284,7 @@ function bindEvents() {
     state.entryMode = els.captureSource.value;
     renderStarterPanel();
     updateCaptureUi();
+    void refreshSystemAudioStatus(false);
   });
   els.chunkMillis.addEventListener("input", () => {
     void handleChunkMillisChange({ immediate: false });
@@ -277,7 +293,16 @@ function bindEvents() {
     void handleChunkMillisChange({ immediate: true });
   });
   els.modelSelect.addEventListener("change", renderModelControls);
-  els.diarizeToggle.addEventListener("change", renderModelControls);
+  els.diarizeToggle.addEventListener("change", () => {
+    renderModelControls();
+    void refreshSystemAudioStatus(false);
+  });
+  els.languageInput.addEventListener("change", () => {
+    void refreshSystemAudioStatus(false);
+  });
+  els.promptInput.addEventListener("change", () => {
+    void refreshSystemAudioStatus(false);
+  });
   els.cleanupBackendSelect.addEventListener("change", () => {
     syncCleanupModelInput(false);
     renderPostProcessControls();
@@ -288,7 +313,9 @@ function bindEvents() {
     renderPostProcessControls();
     renderModelControls();
     updateSessionChrome();
+    void refreshSystemAudioStatus(false);
   });
+  els.copySystemAudioCommandButton.addEventListener("click", copySystemAudioCommand);
   els.installModelButton.addEventListener("click", () => {
     void installSelectedModel();
   });
@@ -302,7 +329,8 @@ function bindEvents() {
 
 function initializeStarter() {
   applyEntryModePreset(state.entryMode, { persist: false, scroll: false });
-  applyScenarioPreset(state.scenarioId, { persist: false, scroll: false });
+  applyScenarioPreset(state.scenarioId, { persist: false, scroll: false, collapse: false });
+  toggleStarterPanel(false);
 }
 
 function currentEntryPreset() {
@@ -327,11 +355,11 @@ function applyEntryModePreset(entryMode, { persist = false, scroll = false } = {
     updateSessionChrome();
   }
   if (scroll) {
-    scrollToWorkflowCard(els.liveWorkflowCard);
+    scrollToWorkflowCard(state.starterCollapsed ? els.dialInCard : els.starterPanel);
   }
 }
 
-function applyScenarioPreset(scenarioId, { persist = true, scroll = false } = {}) {
+function applyScenarioPreset(scenarioId, { persist = true, scroll = false, collapse = false } = {}) {
   const preset = SCENARIO_PRESETS[scenarioId];
   if (!preset) {
     return;
@@ -343,11 +371,14 @@ function applyScenarioPreset(scenarioId, { persist = true, scroll = false } = {}
   els.chunkMillis.value = String(normalizeChunkMillis(preset.chunkMillis));
   renderStarterPanel();
   updateSessionChrome();
+  if (collapse) {
+    toggleStarterPanel(true, { scroll });
+  }
 
   if (persist) {
     void persistChunkMillisSetting(normalizeChunkMillis(preset.chunkMillis)).catch(() => {});
   }
-  if (scroll) {
+  if (scroll && !collapse) {
     focusDialInControls();
   }
 }
@@ -370,67 +401,20 @@ function renderStarterPanel() {
   els.starterSegmentHint.textContent = `${formatChunkMillis(activeChunkMillis)} live segments`;
   els.starterSpeakerHint.textContent = scenarioPreset.diarize ? "Speaker labels on" : "Speaker labels off";
   els.starterFocusHint.textContent = scenarioPreset.focusHint;
-  els.starterPromptPreview.textContent = scenarioPreset.prompt;
-  els.starterPrimaryButton.textContent = entryPreset.actionLabel;
-  renderStarterLaunchState();
   els.liveWorkflowCard.classList.add("is-guided");
 }
 
-async function handleStarterPrimaryAction() {
-  if (state.liveCapture) {
-    scrollToWorkflowCard(els.transcriptStage);
-    return;
+function toggleStarterPanel(collapse, { scroll = false } = {}) {
+  state.starterCollapsed = collapse;
+  els.starterPanel.hidden = collapse;
+  els.dialInCard.hidden = !collapse;
+  if (scroll) {
+    scrollToWorkflowCard(collapse ? els.dialInCard : els.starterPanel);
   }
-  await startMic();
-  if (state.liveCapture) {
-    scrollToWorkflowCard(els.transcriptStage);
-  }
-}
-
-function handleStarterSecondaryAction() {
-  if (state.liveCapture) {
-    scrollToWorkflowCard(els.transcriptStage);
-    return;
-  }
-  focusDialInControls();
 }
 
 function renderStarterLaunchState() {
-  const entryPreset = currentEntryPreset();
-  const sessionId = state.session?.sessionId;
-  const liveActive = Boolean(state.liveCapture);
-  const liveFinishing = Boolean(state.liveCapture?.stopRequested);
-  const captureLabel = entryPreset.label.toLowerCase();
-  const sessionReference = currentSessionReferenceLabel();
-
-  if (liveFinishing) {
-    els.starterLaunchState.textContent = "Finishing";
-    els.starterActionHint.textContent =
-      "The final buffered segment is still being written. The transcript will settle in place when it completes.";
-    els.starterPrimaryButton.disabled = true;
-    els.starterSecondaryButton.textContent = "View Transcript Room";
-    return;
-  }
-
-  if (liveActive) {
-    els.starterLaunchState.textContent = "Recording live";
-    els.starterActionHint.textContent = `LocalScribe is already transcribing from ${captureLabel}. Stay here or jump straight into the transcript room.`;
-    els.starterPrimaryButton.disabled = true;
-    els.starterSecondaryButton.textContent = "View Transcript Room";
-    return;
-  }
-
-  els.starterPrimaryButton.disabled = false;
-  els.starterSecondaryButton.textContent = "Refine Live Setup";
-
-  if (sessionId) {
-    els.starterLaunchState.textContent = "Session ready";
-    els.starterActionHint.textContent = `${sessionReference} is ready. Start from here and LocalScribe will open ${captureLabel} immediately.`;
-    return;
-  }
-
-  els.starterLaunchState.textContent = "Ready to start";
-  els.starterActionHint.textContent = `Start from here and LocalScribe will create a live session, request permission, and begin transcription from ${captureLabel}.`;
+  return;
 }
 
 function focusDialInControls() {
@@ -448,6 +432,7 @@ function scrollToWorkflowCard(node) {
 async function refreshStatus() {
   const response = await fetch("/api/status");
   state.status = await response.json();
+  state.systemAudio = state.status.systemAudio || state.systemAudio;
   const engine = state.status.engine;
   const speaker = state.status.speakerRecognition;
   els.engineName.textContent = engine.engine;
@@ -464,6 +449,7 @@ async function refreshStatus() {
   renderStarterPanel();
   updateSessionChrome();
   updateCaptureUi();
+  renderSystemAudioPanel();
 }
 
 async function refreshPostProcessCatalog(showErrors = false) {
@@ -471,7 +457,7 @@ async function refreshPostProcessCatalog(showErrors = false) {
     const response = await fetch("/api/postprocess/catalog");
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "Could not load local cleanup engines.");
+      throw new Error(data.detail || "Could not load local AI assistants.");
     }
     state.postProcessCatalog = data;
     syncCleanupBackendSelect();
@@ -481,7 +467,40 @@ async function refreshPostProcessCatalog(showErrors = false) {
     renderOllamaStatus();
   } catch (error) {
     if (showErrors) {
-      window.alert(error.message || "Could not load local cleanup engines.");
+      window.alert(error.message || "Could not load local AI assistants.");
+    }
+  }
+}
+
+async function refreshSystemAudioStatus(showErrors = false) {
+  try {
+    const params = new URLSearchParams();
+    if (state.session?.sessionId) {
+      params.set("sessionId", state.session.sessionId);
+    }
+    const language = els.languageInput.value.trim();
+    const prompt = els.promptInput.value.trim();
+    if (language) {
+      params.set("language", language);
+    }
+    if (prompt) {
+      params.set("prompt", prompt);
+    }
+    params.set("diarize", String(Boolean(els.diarizeToggle.checked)));
+    params.set("chunkMillis", String(configuredChunkMillis()));
+
+    const response = await fetch(`/api/system-audio?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not load Mac sound output status.");
+    }
+    state.systemAudio = data.systemAudio;
+    renderSystemAudioPanel();
+    updateCaptureUi();
+    updateSessionChrome();
+  } catch (error) {
+    if (showErrors) {
+      window.alert(error.message || "Could not load Mac sound output status.");
     }
   }
 }
@@ -561,13 +580,13 @@ function defaultCleanupModelForBackend(backendId) {
 function renderPostProcessControls() {
   const catalog = state.postProcessCatalog;
   const backend = selectedCleanupBackendOption();
-  const backendName = backend?.label || "Local cleanup";
+  const backendName = backend?.label || "Local AI assistant";
   const modelName = selectedCleanupModel();
 
   if (!catalog) {
     els.cleanupBackendSelect.disabled = true;
     els.cleanupModelInput.disabled = true;
-    els.cleanupHint.textContent = "Checking which local cleanup engines are available on this Mac.";
+    els.cleanupHint.textContent = "Checking which local AI assistants are available on this Mac.";
     return;
   }
 
@@ -599,7 +618,7 @@ function renderOllamaStatus() {
 
   if (!status && !backend) {
     els.ollamaState.textContent = "Checking…";
-    els.ollamaHint.textContent = "Checking whether the local cleanup engine is running.";
+    els.ollamaHint.textContent = "Checking whether the local AI assistant runtime is running.";
     return;
   }
 
@@ -612,7 +631,7 @@ function renderOllamaStatus() {
       els.ollamaHint.textContent = `Ollama is running locally. New live chunks can use ${modelName} right now.`;
       return;
     }
-    els.ollamaHint.textContent = `Ollama is available locally with ${modelName}. Switch cleanup to Ollama any time.`;
+    els.ollamaHint.textContent = `Ollama is available locally with ${modelName}. Switch the AI assistant to Ollama any time.`;
     return;
   }
 
@@ -621,7 +640,110 @@ function renderOllamaStatus() {
     els.ollamaHint.textContent = `Ollama is not available right now. ${warning}`;
     return;
   }
-  els.ollamaHint.textContent = "Ollama is not available right now. Start the local Ollama service if you want cleanup assistance.";
+  els.ollamaHint.textContent = "Ollama is not available right now. Start the local Ollama service if you want AI assistant help.";
+}
+
+function renderSystemAudioPanel() {
+  const modeSelected = els.captureSource.value === "mac-system-audio";
+  els.systemAudioPanel.hidden = !modeSelected;
+  if (!modeSelected) {
+    return;
+  }
+
+  const helper = state.systemAudio;
+  const uiMessage = (state.systemAudioUiMessage || "").trim();
+  if (!helper) {
+    els.systemAudioPill.textContent = "Checking";
+    els.systemAudioHeadline.textContent = "Checking the native helper…";
+    els.systemAudioSummary.textContent =
+      "LocalScribe is checking whether the native ScreenCaptureKit helper is available for current Mac sound output.";
+    els.systemAudioCommand.textContent = "";
+    els.systemAudioDetail.textContent = "If the helper is available, Start Mac Output will attach it to the current live session.";
+    els.copySystemAudioCommandButton.disabled = true;
+    return;
+  }
+
+  const currentSessionAttached = helper.sessionId && helper.sessionId === state.session?.sessionId;
+  const helperRunning = Boolean(helper.running);
+  const helperReady = Boolean(helper.available);
+  const command = helperReady ? helper.launchCommand : helper.buildCommand;
+
+  if (helperRunning && currentSessionAttached) {
+    els.systemAudioPill.textContent = "Running";
+    els.systemAudioHeadline.textContent = "Current Mac sound output is live";
+    els.systemAudioSummary.textContent =
+      "The native helper is already capturing the sound coming from this Mac and streaming it into this session.";
+  } else if (helperRunning) {
+    els.systemAudioPill.textContent = "Busy";
+    els.systemAudioHeadline.textContent = "Native helper is attached elsewhere";
+    els.systemAudioSummary.textContent =
+      "The native helper is already streaming Mac output into another LocalScribe session. Stop it there before starting a new one here.";
+  } else if (helperReady) {
+    els.systemAudioPill.textContent = "Ready";
+    els.systemAudioHeadline.textContent = "Native Mac sound capture is ready";
+    els.systemAudioSummary.textContent =
+      "Use Start Mac Output to capture whatever is currently playing through this Mac without depending on browser audio support.";
+  } else {
+    els.systemAudioPill.textContent = "Build needed";
+    els.systemAudioHeadline.textContent = "Mac output needs one setup step";
+    els.systemAudioSummary.textContent =
+      "Direct Mac-output capture is available here, but the native helper has to be built once on this machine first.";
+  }
+
+  els.systemAudioCommand.textContent = command || "";
+  const troubleshooting = helperReady
+    ? "The helper will request Screen Recording permission the first time macOS needs it."
+    : "Run the build command above in Terminal. If Swift build fails, update or switch Xcode / Command Line Tools so the active Swift compiler matches the active macOS SDK, then refresh this panel.";
+  els.systemAudioDetail.textContent = uiMessage || helper.warning || troubleshooting;
+  els.copySystemAudioCommandButton.textContent = helperReady ? "Copy Launch Command" : "Copy Setup Command";
+  els.copySystemAudioCommandButton.disabled = !command;
+}
+
+function updateInputLevelMeter(level) {
+  const normalized = Math.max(0, Math.min(1, Number(level) || 0));
+  els.inputLevelFill.style.width = `${Math.round(normalized * 100)}%`;
+  if (!state.liveCapture) {
+    els.inputLevelLabel.textContent = INPUT_LEVEL_IDLE;
+    return;
+  }
+  if (normalized < 0.01) {
+    els.inputLevelLabel.textContent = "Very quiet";
+    return;
+  }
+  if (normalized < 0.04) {
+    els.inputLevelLabel.textContent = "Low";
+    return;
+  }
+  if (normalized < 0.14) {
+    els.inputLevelLabel.textContent = "Good";
+    return;
+  }
+  els.inputLevelLabel.textContent = "Strong";
+}
+
+function quietInputBoost(samples) {
+  let peak = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = Math.abs(samples[index]);
+    if (value > peak) {
+      peak = value;
+    }
+  }
+  updateInputLevelMeter(peak);
+  if (peak <= 0 || peak >= 0.025) {
+    return samples;
+  }
+
+  const gain = Math.min(18, 0.12 / peak);
+  if (gain <= 1.2) {
+    return samples;
+  }
+
+  const boosted = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    boosted[index] = Math.max(-1, Math.min(1, samples[index] * gain));
+  }
+  return boosted;
 }
 
 async function refreshModelCatalog(showErrors = false) {
@@ -867,9 +989,9 @@ function buildModelFeatures(model) {
 function postProcessingLabel() {
   const backend = selectedCleanupBackendOption();
   if (backend?.ready) {
-    return `Local cleanup on (${backend.label})`;
+    return `AI assistant on (${backend.label})`;
   }
-  return `Local cleanup pending (${backend?.label || selectedCleanupBackend()})`;
+  return `AI assistant pending (${backend?.label || selectedCleanupBackend()})`;
 }
 
 function realtimeLabelForModel(model) {
@@ -977,6 +1099,7 @@ async function createSession({ focusTitleInput = false } = {}) {
   state.mode = "Live";
   setTranscriptFromSession();
   updateSessionChrome();
+  void refreshSystemAudioStatus(false);
   await refreshSessionHistory();
   renderTranscript();
   if (focusTitleInput) {
@@ -986,18 +1109,23 @@ async function createSession({ focusTitleInput = false } = {}) {
 }
 
 async function startMic() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    window.alert("Audio capture is not supported in this browser.");
-    return;
-  }
-
   if (!state.session || state.session.sessionType === "upload") {
     await createSession();
   }
 
   try {
-    await connectSocket();
+    state.systemAudioUiMessage = "";
     const sourceMode = els.captureSource.value;
+    if (sourceMode === "mac-system-audio") {
+      await startSystemAudioCapture();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      window.alert("Audio capture is not supported in this browser.");
+      return;
+    }
+
+    await connectSocket();
     const capture = await acquireCaptureStream(sourceMode);
     state.captureStream = capture.rawStream;
     state.mediaStream = capture.recorderStream;
@@ -1010,13 +1138,77 @@ async function startMic() {
     renderTranscript();
   } catch (error) {
     await abandonLiveCapture();
+    if (els.captureSource.value === "mac-system-audio") {
+      handleSystemAudioStartFailure(error.message || "Could not start current Mac sound output capture.");
+      return;
+    }
     window.alert(error.message || "Could not start audio capture.");
   }
+}
+
+async function startSystemAudioCapture() {
+  const sessionId = state.session?.sessionId;
+  if (!sessionId) {
+    throw new Error("No session available.");
+  }
+
+  const response = await fetch("/api/system-audio/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId,
+      language: els.languageInput.value.trim() || null,
+      prompt: els.promptInput.value.trim() || null,
+      diarize: els.diarizeToggle.checked,
+      chunkMillis: configuredChunkMillis(),
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || "Could not start current Mac sound output capture.");
+  }
+
+  state.systemAudio = data.systemAudio || state.systemAudio;
+  state.session = data.session || state.session;
+  state.liveCapture = {
+    mode: "mac-system-audio",
+    awaitingAck: false,
+    stopRequested: false,
+    inputStopped: false,
+    pollTimer: window.setInterval(() => {
+      void pollSystemAudioSession();
+    }, 1000),
+  };
+  els.livePill.textContent = "Recording";
+  els.startButton.disabled = true;
+  els.stopButton.disabled = false;
+  state.mode = "Live";
+  setTranscriptFromSession();
+  updateSessionChrome();
+  renderTranscript();
+  renderSystemAudioPanel();
+}
+
+function handleSystemAudioStartFailure(message) {
+  state.systemAudioUiMessage = `${message} Build the helper once from the command below, then try Start Mac Output again.`;
+  renderSystemAudioPanel();
+  scrollToWorkflowCard(els.dialInCard);
 }
 
 async function stopMic() {
   const liveCapture = state.liveCapture;
   if (!liveCapture) {
+    await finalizeStopMic();
+    return;
+  }
+
+  if (liveCapture.mode === "mac-system-audio") {
+    liveCapture.stopRequested = true;
+    els.livePill.textContent = "Finishing";
+    els.startButton.disabled = true;
+    els.stopButton.disabled = true;
+    updateSessionChrome();
+    await stopSystemAudioCapture();
     await finalizeStopMic();
     return;
   }
@@ -1036,6 +1228,16 @@ async function stopMic() {
   if (!flushed) {
     await finalizeStopMic();
   }
+}
+
+async function stopSystemAudioCapture() {
+  const response = await fetch("/api/system-audio/stop", { method: "POST" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || "Could not stop current Mac sound output capture.");
+  }
+  state.systemAudio = data.systemAudio || state.systemAudio;
+  renderSystemAudioPanel();
 }
 
 async function connectSocket() {
@@ -1116,6 +1318,23 @@ async function copyTranscript() {
   }, 1200);
 }
 
+async function copySystemAudioCommand() {
+  const command = state.systemAudio?.available ? state.systemAudio?.launchCommand : state.systemAudio?.buildCommand;
+  if (!command) {
+    return;
+  }
+  if (!navigator.clipboard?.writeText) {
+    window.alert("Clipboard access is not available in this browser.");
+    return;
+  }
+  await navigator.clipboard.writeText(command);
+  const original = els.copySystemAudioCommandButton.textContent;
+  els.copySystemAudioCommandButton.textContent = "Copied";
+  window.setTimeout(() => {
+    els.copySystemAudioCommandButton.textContent = original;
+  }, 1200);
+}
+
 async function downloadExport() {
   const sessionId = state.session?.sessionId;
   if (!sessionId) {
@@ -1172,6 +1391,7 @@ async function openSession(sessionId) {
   state.mode = state.session.sessionType === "upload" ? "Batch" : "Live";
   setTranscriptFromSession();
   updateSessionChrome();
+  void refreshSystemAudioStatus(false);
   renderTranscript();
 }
 
@@ -1191,7 +1411,49 @@ async function refreshRemoteSession() {
   }
   setTranscriptFromSession();
   updateSessionChrome();
+  void refreshSystemAudioStatus(false);
   renderTranscript();
+}
+
+async function pollSystemAudioSession() {
+  const sessionId = state.session?.sessionId;
+  if (!sessionId || state.liveCapture?.mode !== "mac-system-audio") {
+    return;
+  }
+
+  try {
+    const [sessionResponse, helperResponse] = await Promise.all([
+      fetch(`/api/sessions/${sessionId}`),
+      fetch(`/api/system-audio?${new URLSearchParams({
+        sessionId,
+        language: els.languageInput.value.trim(),
+        prompt: els.promptInput.value.trim(),
+        diarize: String(Boolean(els.diarizeToggle.checked)),
+        chunkMillis: String(configuredChunkMillis()),
+      }).toString()}`),
+    ]);
+
+    if (sessionResponse.ok) {
+      const data = await sessionResponse.json();
+      state.session = data.session;
+      setTranscriptFromSession();
+      renderTranscript();
+    }
+
+    if (helperResponse.ok) {
+      const data = await helperResponse.json();
+      state.systemAudio = data.systemAudio;
+      renderSystemAudioPanel();
+      if (!data.systemAudio?.running && !state.liveCapture?.stopRequested) {
+        await finalizeStopMic();
+        return;
+      }
+    }
+  } catch (error) {
+    console.warn("Could not refresh native Mac sound capture.", error);
+  }
+
+  updateSessionChrome();
 }
 
 function composeTranscriptText(segments) {
@@ -1337,7 +1599,8 @@ function setTranscriptFromSession() {
     state.segmentDrafts = {};
     state.draftSessionId = state.session.sessionId;
   }
-  const segments = state.session.segments || [];
+  const segments = [...(state.session.segments || []), ...(state.session.draftSegments || [])]
+    .sort((left, right) => (left.start - right.start) || (left.end - right.end) || left.segmentId.localeCompare(right.segmentId));
   state.transcript = {
     text: composeTranscriptText(segments),
     segments,
@@ -1524,13 +1787,17 @@ function renderTranscript() {
       : "Each detected speaker change is listed here so you can jump through the conversation.";
   els.timelineHint.textContent =
     segments.length > 0
-      ? "Edit any segment inline. Your changes are saved back to the live session while new chunks continue to arrive."
+      ? segments.some((segment) => segment.isFinal === false)
+        ? "Final lines can be edited inline. The live caption line keeps updating until the speaker pauses or someone else cuts in."
+        : "Edit any finished segment inline. Your changes are saved back to the live session while new speech continues to arrive."
       : liveFinishing
         ? "LocalScribe is finishing the last buffered chunk now. Your transcript will settle here when it completes."
         : sourceAttention && attentionCopy
           ? attentionCopy.hint
           : liveActive
-          ? "Recording is already live. The first text appears after the current short chunk finishes processing."
+          ? state.liveCapture?.mode === "mac-system-audio"
+            ? "Mac sound output capture is live. New text lands here as soon as LocalScribe finishes each detected turn."
+            : "Recording is already live. The first text appears after the current short chunk finishes processing."
           : hasSession
             ? "This session is ready. Start the mic when you want transcript segments to begin appearing here."
             : "Create a live session to populate the live editor.";
@@ -1601,8 +1868,9 @@ function renderTranscript() {
       emptyBody = attentionCopy.emptyBody;
     } else if (liveActive) {
       emptyTitle = "Listening for the first transcript";
-      emptyBody =
-        "Recording is live right now. The first segment appears after LocalScribe closes the current short chunk, applies local cleanup, and writes it into this editor.";
+      emptyBody = state.liveCapture?.mode === "mac-system-audio"
+        ? "Mac sound output capture is already live. The first text will appear once LocalScribe hears a usable turn from the current Mac output."
+        : "Recording is live right now. The first live caption appears once LocalScribe hears enough of the current turn to place a sentence or speaker boundary.";
     } else if (hasSession) {
       emptyTitle = "Session ready for live capture";
       emptyBody =
@@ -1619,28 +1887,37 @@ function renderTranscript() {
     const fragment = els.timelineItemTemplate.content.cloneNode(true);
     const article = fragment.querySelector(".segment");
     const editor = fragment.querySelector(".segment-editor");
+    const stateNode = fragment.querySelector(".segment-state");
     article.dataset.segmentId = segment.segmentId;
     article.id = `segment-${segment.segmentId}`;
+    article.classList.toggle("is-draft", segment.isFinal === false);
     article.querySelector(".segment-speaker").textContent = segment.speakerName || "Unassigned";
+    stateNode.textContent = segment.isFinal === false ? "Live caption" : "Locked";
     article.querySelector(".segment-time").textContent = `${formatClock(segment.start)} - ${formatClock(segment.end)}`;
     editor.value = currentSegmentText(segment);
-    editor.addEventListener("input", () => {
-      state.segmentDrafts[segment.segmentId] = editor.value;
-      autosizeTextarea(editor);
-      queueSegmentTextSave(segment.segmentId, editor.value);
-      updateTranscriptTextFromDrafts();
-    });
-    editor.addEventListener("blur", () => {
-      if (!_isRenderingTranscript) {
-        void saveSegmentText(segment.segmentId, editor.value);
-      }
-    });
-    editor.addEventListener("keydown", (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-        event.preventDefault();
-        void saveSegmentText(segment.segmentId, editor.value);
-      }
-    });
+    if (segment.isFinal === false) {
+      editor.readOnly = true;
+      editor.setAttribute("aria-readonly", "true");
+      editor.title = "This live caption keeps updating until the speaker pauses or the next speaker interrupts.";
+    } else {
+      editor.addEventListener("input", () => {
+        state.segmentDrafts[segment.segmentId] = editor.value;
+        autosizeTextarea(editor);
+        queueSegmentTextSave(segment.segmentId, editor.value);
+        updateTranscriptTextFromDrafts();
+      });
+      editor.addEventListener("blur", () => {
+        if (!_isRenderingTranscript) {
+          void saveSegmentText(segment.segmentId, editor.value);
+        }
+      });
+      editor.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          void saveSegmentText(segment.segmentId, editor.value);
+        }
+      });
+    }
     autosizeTextarea(editor);
     els.timeline.append(article);
   });
@@ -1887,11 +2164,20 @@ function updateSessionChrome() {
     els.sessionCaption.textContent = sessionId ? attentionCopy.caption : attentionCopy.caption.replace(`${sessionReference} `, "");
     els.liveSummary.textContent = attentionCopy.summary;
   } else if (liveActive) {
-    els.sessionStatusText.textContent = "Recording live";
-    els.sessionCaption.textContent = sessionId ? `${sessionReference} is streaming live audio.` : "A live session is actively recording.";
-    els.liveSummary.textContent = state.liveCapture?.awaitingAck
-      ? "Writing the latest live chunk now. Audio keeps buffering locally until it catches up."
-      : "Microphone is live and streaming short chunks.";
+    const macOutputMode = state.liveCapture?.mode === "mac-system-audio";
+    els.sessionStatusText.textContent = macOutputMode ? "Capturing Mac output" : "Recording live";
+    els.sessionCaption.textContent = sessionId
+      ? macOutputMode
+        ? `${sessionReference} is receiving audio from the current Mac sound output.`
+        : `${sessionReference} is streaming live audio.`
+      : macOutputMode
+        ? "A live session is capturing the current Mac sound output."
+        : "A live session is actively recording.";
+    els.liveSummary.textContent = macOutputMode
+      ? "Current Mac sound output is flowing through the native helper. The transcript refreshes as each live turn lands."
+      : state.liveCapture?.awaitingAck
+        ? "Writing the latest live chunk now. Audio keeps buffering locally until it catches up."
+        : "Microphone is live and streaming short chunks.";
   } else if (sessionId) {
     els.sessionStatusText.textContent = "Session ready";
     els.sessionCaption.textContent = `${sessionReference} is armed for live capture.`;
@@ -1916,9 +2202,12 @@ function updateSessionChrome() {
 function updateCaptureUi() {
   const sourceMode = els.captureSource.value;
   const microphoneMode = sourceMode === "microphone";
+  const entryPreset = currentEntryPreset();
   els.audioInputSelect.disabled = !microphoneMode;
   els.refreshInputsButton.disabled = !microphoneMode;
+  els.startButton.textContent = entryPreset.actionLabel;
   els.helperNote.textContent = captureHelperText();
+  renderSystemAudioPanel();
 }
 
 function renderChunkMillisControls() {
@@ -1942,6 +2231,7 @@ async function handleChunkMillisChange({ immediate = false } = {}) {
   renderChunkMillisControls();
   updateSessionChrome();
   renderStarterPanel();
+  void refreshSystemAudioStatus(false);
 
   queueChunkMillisPersist(chunkMillis, { immediate });
 }
@@ -2101,8 +2391,17 @@ async function acquireCaptureStream(sourceMode) {
   }
 
   const deviceId = els.audioInputSelect.value;
+  const audioConstraints = {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+  if (deviceId) {
+    audioConstraints.deviceId = { exact: deviceId };
+  }
   const rawStream = await navigator.mediaDevices.getUserMedia({
-    audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+    audio: audioConstraints,
     video: false,
   });
   await refreshAudioInputs(false);
@@ -2110,10 +2409,20 @@ async function acquireCaptureStream(sourceMode) {
 }
 
 function captureHelperText() {
-  if (els.captureSource.value === "browser-audio") {
-    return "Browser or screen audio capture depends on browser support. Safari is best for microphone mode; Chromium browsers are better for tab audio.";
+  if (els.captureSource.value === "mac-system-audio") {
+    const helper = state.systemAudio;
+    if (helper?.running && helper.sessionId === state.session?.sessionId) {
+      return "LocalScribe is using the native Mac sound helper for this session. Audio from the current Mac output is flowing directly into the transcript room.";
+    }
+    if (helper?.available) {
+      return "Use Start Mac Output to capture whatever is playing through this Mac. LocalScribe will use the native ScreenCaptureKit helper instead of browser audio capture.";
+    }
+    return "LocalScribe can capture current Mac sound output, but the native helper needs to be built once first. The exact build command is shown below.";
   }
-  return `Choose a microphone input and stream ${formatChunkMillis(configuredChunkMillis())} chunks for live transcription with the ${currentScenarioPreset().title.toLowerCase()} preset.${cleanupSessionNote()}`;
+  if (els.captureSource.value === "browser-audio") {
+    return "Browser or screen audio capture depends on browser support. Use this for tab sharing. For direct Mac output capture, switch to Current Mac sound output.";
+  }
+  return `Choose a microphone input and let LocalScribe shape live turns around ${formatChunkMillis(configuredChunkMillis())} of rolling audio for the ${currentScenarioPreset().title.toLowerCase()} preset.${cleanupSessionNote()}`;
 }
 
 function cleanupSessionNote() {
@@ -2121,15 +2430,15 @@ function cleanupSessionNote() {
   const model = selectedCleanupModel();
   if (backend?.ready) {
     return model
-      ? ` Local cleanup will use ${backend.label} with ${model} for the next chunks.`
-      : ` Local cleanup will use ${backend.label} for the next chunks.`;
+      ? ` The AI assistant will use ${backend.label} with ${model} for the next turns.`
+      : ` The AI assistant will use ${backend.label} for the next turns.`;
   }
-  return ` Local cleanup is turned on, but ${backend?.label || "the selected engine"} is not ready yet.`;
+  return ` The AI assistant layer is turned on, but ${backend?.label || "the selected engine"} is not ready yet.`;
 }
 
 function buildTimelineLead(segmentCount) {
   if (segmentCount > 0) {
-    return "Live conversation segments are arriving in sequence, and you can correct each one inline while the session continues.";
+    return "Live captions keep reshaping into finished turns as speakers pause, finish sentences, or interrupt one another.";
   }
   if (sessionNeedsSourceAttention()) {
     return currentSourceAttentionCopy().lead;
@@ -2138,7 +2447,9 @@ function buildTimelineLead(segmentCount) {
     return "LocalScribe is finishing the last buffered live segment before this session closes.";
   }
   if (state.liveCapture) {
-    return "Recording is live. The first segment will appear as soon as the current chunk completes.";
+    return state.liveCapture.mode === "mac-system-audio"
+      ? "Current Mac sound output is live. LocalScribe will place text here as soon as it hears a usable sentence or turn boundary."
+      : "Recording is live. The first caption appears once LocalScribe hears a usable sentence or turn boundary.";
   }
   if (state.session?.sessionId) {
     return "This live session is ready. Start the microphone when you want the editor to begin filling.";
@@ -2181,7 +2492,7 @@ async function startLiveAudioCapture(stream) {
       return;
     }
 
-    const monoSamples = mixToMono(event.inputBuffer);
+    const monoSamples = quietInputBoost(mixToMono(event.inputBuffer));
     liveCapture.pendingBuffers.push(monoSamples);
     liveCapture.pendingSamples += monoSamples.length;
     if (liveCapture.pendingSamples >= liveCapture.targetSamplesPerChunk && !liveCapture.flushing) {
@@ -2238,6 +2549,10 @@ async function stopAudioInput(liveCapture) {
 }
 
 async function finalizeStopMic() {
+  const liveCapture = state.liveCapture;
+  if (liveCapture?.pollTimer) {
+    window.clearInterval(liveCapture.pollTimer);
+  }
   state.liveCapture = null;
   if (state.socket) {
     const socket = state.socket;
@@ -2252,15 +2567,28 @@ async function finalizeStopMic() {
   els.livePill.textContent = "Idle";
   els.startButton.disabled = false;
   els.stopButton.disabled = true;
+  updateInputLevelMeter(0);
   updateSessionChrome();
+  renderSystemAudioPanel();
   await refreshSessionHistory();
 }
 
 async function abandonLiveCapture(message) {
   const socket = state.socket;
   const liveCapture = state.liveCapture;
+  if (liveCapture?.pollTimer) {
+    window.clearInterval(liveCapture.pollTimer);
+  }
   if (liveCapture) {
-    await stopAudioInput(liveCapture);
+    if (liveCapture.mode === "mac-system-audio") {
+      try {
+        await stopSystemAudioCapture();
+      } catch (error) {
+        console.warn("Could not stop native Mac sound capture.", error);
+      }
+    } else {
+      await stopAudioInput(liveCapture);
+    }
   }
   state.liveCapture = null;
   state.mediaStream = null;
@@ -2272,7 +2600,9 @@ async function abandonLiveCapture(message) {
   els.livePill.textContent = "Idle";
   els.startButton.disabled = false;
   els.stopButton.disabled = true;
+  updateInputLevelMeter(0);
   updateSessionChrome();
+  renderSystemAudioPanel();
   if (message) {
     window.alert(message);
   }

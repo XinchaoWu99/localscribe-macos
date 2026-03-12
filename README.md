@@ -4,15 +4,15 @@
 
 # LocalScribe
 
-LocalScribe is a local-first macOS live transcription workspace.
+LocalScribe is a local-first macOS live transcription control room for meetings, interviews, podcasts, presentations, and streamed playback.
 
-It runs a browser UI on your Mac, keeps inference local, supports real-time transcription, detects speaker changes, lets you rename speakers directly in the transcript, and can optionally run a local cleanup pass for punctuation and entity correction after each chunk.
+It runs in the browser on your own Mac, keeps speech recognition local, shows a live editable transcript, tracks speaker changes, supports WhisperKit model management from the UI, and can use a local AI assistant to stabilize punctuation, names, acronyms, and turn-to-turn context while capture is running.
 
 ## Release status
 
-Current release: `v0.2.0`
+Current release: `v0.2.1`
 
-LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is best treated as a local-first transcription workspace rather than a polished notarized desktop app.
+LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is best treated as a serious local transcription workspace rather than a notarized consumer desktop app.
 
 ## What it does
 
@@ -22,8 +22,8 @@ LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is
 - Managed local WhisperKit server startup
 - Whisper model installation and switching from the UI
 - Speaker-aware segmentation, speaker markers, and editable speaker labels
-- Context linking across live chunks
-- Optional local post-processing with Ollama or MLX
+- Rolling context linking across live turns
+- Optional local AI assistant backends with Ollama or MLX
 - Saved sessions and export in TXT, Markdown, SRT, VTT, and JSON
 
 ## Best fit
@@ -32,6 +32,20 @@ LocalScribe is strongest on Apple Silicon Macs because it is designed around Whi
 
 - Apple Silicon: preferred path
 - Intel Mac: supported, but use `faster-whisper` instead of WhisperKit
+
+## Quick Start
+
+Fastest setup on a new Mac:
+
+```bash
+git clone <your-repo-url>
+cd localscribe
+bash scripts/bootstrap-macos.sh
+source .venv/bin/activate
+LOCALSCRIBE_ENGINE=whisperkit LOCALSCRIBE_WHISPER_MODEL=tiny uv run localscribe --reload
+```
+
+Then open `http://127.0.0.1:8765` in Safari.
 
 ## Install on a New macOS System
 
@@ -53,8 +67,22 @@ brew --version
 
 ### 3. Install system dependencies
 
+Required for the main app:
+
 ```bash
-brew install python@3.12 uv ffmpeg whisperkit-cli
+brew install python@3.12 uv ffmpeg node
+```
+
+Recommended on Apple Silicon:
+
+```bash
+brew install whisperkit-cli
+```
+
+Optional for the local AI assistant:
+
+```bash
+brew install ollama
 ```
 
 What these are for:
@@ -62,7 +90,9 @@ What these are for:
 - `python@3.12`: runtime for the app
 - `uv`: environment and dependency manager
 - `ffmpeg`: audio normalization and decoding
+- `node`: frontend/E2E tooling
 - `whisperkit-cli`: local WhisperKit server for Apple Silicon
+- `ollama`: optional local AI assistant runtime
 
 ### 4. Clone the repository
 
@@ -84,7 +114,13 @@ source .venv/bin/activate
 uv sync --extra dev
 ```
 
-This installs the LocalScribe app runtime, test tooling, and optional local cleanup runtimes including MLX support.
+This installs the LocalScribe app runtime, test tooling, and optional MLX runtime support.
+
+If you want a one-command setup, you can run:
+
+```bash
+bash scripts/bootstrap-macos.sh
+```
 
 ### 7. Start the app
 
@@ -100,6 +136,12 @@ For Intel Macs:
 LOCALSCRIBE_ENGINE=faster-whisper LOCALSCRIBE_FASTER_WHISPER_MODEL=base uv run localscribe --reload
 ```
 
+If you want a custom app port:
+
+```bash
+LOCALSCRIBE_PORT=9000 uv run localscribe --reload
+```
+
 ### 8. Open the app in Safari
 
 Open:
@@ -107,6 +149,8 @@ Open:
 ```text
 http://127.0.0.1:8765
 ```
+
+If you changed the app port, replace `8765` with your chosen port.
 
 Then allow:
 
@@ -133,9 +177,9 @@ After the app is open, use the model panel to:
 2. Choose `Live microphone` or `Browser or system audio`.
 3. Choose a scenario preset such as meeting, podcast, discussion, oral presentation, TV news, or interview.
 4. Adjust `Live segment length`.
-5. Click `New Session`.
-6. Click `Start Mic`.
-7. Watch speaker markers and the transcript timeline update in real time.
+5. Click `Create Session`.
+6. Click `Start Live Mic`.
+7. Watch the live caption line update, then settle into speaker-aware transcript turns in real time.
 
 ## Optional Features
 
@@ -145,19 +189,18 @@ For system output capture without browser limitations, use the helper in:
 
 - [Native system audio guide](docs/NATIVE_SYSTEM_AUDIO.md)
 
-### Optional local cleanup with Ollama
+### Optional local AI assistant with Ollama
 
-If you want a second local pass for punctuation and entity cleanup after each chunk:
+If you want the default local AI assistant path:
 
 ```bash
-export LOCALSCRIBE_ENABLE_POST_PROCESSING=1
-export LOCALSCRIBE_POSTPROCESS_BACKEND=ollama
-export LOCALSCRIBE_POSTPROCESS_MODEL=qwen2.5:3b-instruct
+brew services start ollama
+ollama pull qwen2.5:3b-instruct
 ```
 
-You also need a running local Ollama server with that model pulled.
+LocalScribe uses Ollama by default when it is available.
 
-### Optional local cleanup with MLX
+### Optional local AI assistant with MLX
 
 If you prefer MLX:
 
@@ -167,7 +210,7 @@ export LOCALSCRIBE_POSTPROCESS_BACKEND=mlx
 export LOCALSCRIBE_POSTPROCESS_MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit
 ```
 
-The default remains the faster no-op path, so real-time capture still works without any local LLM installed.
+This is useful when you want an on-device assistant path without running Ollama.
 
 ## Troubleshooting
 
@@ -205,6 +248,21 @@ export LOCALSCRIBE_ENGINE=faster-whisper
 export LOCALSCRIBE_FASTER_WHISPER_MODEL=base
 ```
 
+### The AI assistant shows as unavailable
+
+For Ollama:
+
+```bash
+brew services start ollama
+ollama pull qwen2.5:3b-instruct
+```
+
+For MLX:
+
+```bash
+uv sync --extra dev
+```
+
 ## Documentation
 
 - [Local run tutorial](docs/LOCAL_RUN_TUTORIAL.md)
@@ -236,6 +294,13 @@ Run tests:
 
 ```bash
 uv run pytest tests
+```
+
+Run the E2E test suite:
+
+```bash
+npm install
+npm run test:e2e
 ```
 
 Check the frontend script:

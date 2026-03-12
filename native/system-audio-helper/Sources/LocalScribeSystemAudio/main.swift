@@ -55,7 +55,7 @@ struct CommandLineOptions {
     let listDisplays: Bool
 
     static func parse(arguments: [String]) throws -> CommandLineOptions {
-        var server = "http://127.0.0.1:8765"
+        var server = defaultServerURL()
         var sessionID: String?
         var language: String?
         var prompt: String?
@@ -127,7 +127,7 @@ struct CommandLineOptions {
         Capture native macOS system audio with ScreenCaptureKit and stream it into LocalScribe.
 
         Options:
-          --server URL         LocalScribe base URL (default: http://127.0.0.1:8765)
+          --server URL         LocalScribe base URL (default: derived from LOCALSCRIBE_SERVER_URL or LOCALSCRIBE_HOST/LOCALSCRIBE_PORT)
           --session-id ID      Attach to an existing LocalScribe live session
           --language CODE      Language hint, for example en or zh
           --prompt TEXT        Prompt bias for names and acronyms
@@ -139,6 +139,23 @@ struct CommandLineOptions {
           --help               Show this help
         """
         print(text)
+    }
+
+    private static func defaultServerURL() -> String {
+        let environment = ProcessInfo.processInfo.environment
+        if let explicit = environment["LOCALSCRIBE_SERVER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty
+        {
+            return explicit
+        }
+
+        let host = environment["LOCALSCRIBE_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? environment["LOCALSCRIBE_HOST"]!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "127.0.0.1"
+        let port = environment["LOCALSCRIBE_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? environment["LOCALSCRIBE_PORT"]!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "8765"
+        return "http://\(host):\(port)"
     }
 
     private static func value(after flag: String, in arguments: [String], index: Int) throws -> String {

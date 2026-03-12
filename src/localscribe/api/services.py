@@ -12,6 +12,7 @@ from ..postprocess import LocalPostProcessingService
 from ..speakers import SpeakerResolver
 from ..storage import FileStore, SessionStore
 from ..streaming import StreamingService
+from ..system_audio import NativeSystemAudioService
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class AppServices:
     context_refinement_service: ContextRefinementService
     post_processing_service: LocalPostProcessingService
     streaming_service: StreamingService
+    system_audio_service: NativeSystemAudioService
     static_dir: Path
 
     def startup(self) -> None:
@@ -33,12 +35,14 @@ class AppServices:
             startup()
 
     def shutdown(self) -> None:
+        self.system_audio_service.shutdown()
         shutdown = getattr(self.engine, "shutdown", None)
         if callable(shutdown):
             shutdown()
 
 
 def build_services(settings: Settings, static_dir: Path) -> AppServices:
+    project_root = Path(__file__).resolve().parents[3]
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.sessions_dir.mkdir(parents=True, exist_ok=True)
     settings.speakers_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +90,7 @@ def build_services(settings: Settings, static_dir: Path) -> AppServices:
         context_refinement_service=context_refinement_service,
         post_processing_service=post_processing_service,
     )
+    system_audio_service = NativeSystemAudioService(settings=settings, project_root=project_root)
     return AppServices(
         settings=settings,
         engine=engine,
@@ -96,5 +101,6 @@ def build_services(settings: Settings, static_dir: Path) -> AppServices:
         context_refinement_service=context_refinement_service,
         post_processing_service=post_processing_service,
         streaming_service=streaming_service,
+        system_audio_service=system_audio_service,
         static_dir=static_dir,
     )

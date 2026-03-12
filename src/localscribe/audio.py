@@ -4,6 +4,7 @@ import math
 from array import array
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 import wave
 
@@ -41,6 +42,41 @@ def normalize_audio(source: Path, destination: Path) -> None:
             str(destination),
         ]
     )
+
+
+def apply_volume_gain(path: Path, gain_multiplier: float) -> None:
+    require_ffmpeg()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    multiplier = max(1.0, float(gain_multiplier))
+    if multiplier <= 1.01:
+        return
+
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".wav", delete=False) as handle:
+        temp_path = Path(handle.name)
+
+    try:
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(path),
+                "-vn",
+                "-af",
+                f"volume={multiplier:.4f}",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-sample_fmt",
+                "s16",
+                str(temp_path),
+            ]
+        )
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 def probe_duration_seconds(path: Path) -> float:

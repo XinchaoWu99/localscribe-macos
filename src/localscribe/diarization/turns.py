@@ -38,6 +38,10 @@ class DiscussionTurnSegmenter:
         turns.append(current)
         return turns
 
+    def can_merge(self, current: TranscriptSegment, incoming: TranscriptSegment) -> bool:
+        gap = max(0.0, incoming.start - current.end)
+        return self._should_merge(current, incoming, gap)
+
     def _should_merge(self, current: TranscriptSegment, incoming: TranscriptSegment, gap: float) -> bool:
         duration = incoming.end - current.start
         return (

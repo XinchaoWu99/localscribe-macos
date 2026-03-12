@@ -39,24 +39,20 @@ test("editable transcript panel keeps saved edits while new live chunks arrive",
   const editors = page.locator(".segment-editor");
   await expect(editors).toHaveCount(1);
   await expect(editors.first()).toHaveValue(/Chunk 1 captured in mock mode/);
+  await expect(page.locator(".segment.is-draft")).toHaveCount(1);
+  await expect(page.locator(".segment-state").first()).toHaveText("Live caption");
 
-  const editedText = "Edited live transcript for Playwright coverage.";
-  const saveResponse = page.waitForResponse((response) => {
-    return response.request().method() === "PATCH" && /\/api\/sessions\/.+\/segments\/.+/.test(response.url());
-  });
-  await editors.first().fill(editedText);
-  await page.locator("#modelHeadline").click();
-  await saveResponse;
-  await expect(editors.first()).toHaveValue(editedText);
+  await expect(editors.first()).toHaveJSProperty("readOnly", true);
 
   await ingestLiveChunk(page, sessionId, 2, buildToneWavBase64({ durationMs: 1400, frequencyHz: 660 }));
   await page.reload();
   await openSessionByTitle(page, title);
 
   const persistedEditors = page.locator(".segment-editor");
-  await expect(persistedEditors).toHaveCount(2);
-  await expect(persistedEditors.nth(0)).toHaveValue(editedText);
-  await expect(persistedEditors.nth(1)).toHaveValue(/Chunk 2 captured in mock mode/);
+  await expect(persistedEditors).toHaveCount(1);
+  await expect(persistedEditors.first()).toHaveValue(/Chunk 1 captured in mock mode.+Chunk 2 captured in mock mode/);
+  await expect(page.locator(".segment.is-draft")).toHaveCount(1);
+  await expect(page.locator(".segment-state").first()).toHaveText("Live caption");
 });
 
 async function createNamedSession(request, title) {

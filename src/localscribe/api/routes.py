@@ -27,8 +27,64 @@ def register_routes(app: FastAPI, services: AppServices) -> None:
             "contextRefinement": services.context_refinement_service.status(),
             "postProcessing": services.post_processing_service.status(),
             "speakerRecognition": services.speaker_resolver.status(),
+            "systemAudio": services.system_audio_service.status(),
             "settings": services.streaming_service.status(),
         }
+
+    @app.get("/api/system-audio")
+    async def system_audio_status(
+        session_id: str | None = Query(default=None, alias="sessionId"),
+        language: str | None = Query(default=None),
+        prompt: str | None = Query(default=None),
+        diarize: bool = Query(default=True),
+        chunk_millis: int | None = Query(default=None, alias="chunkMillis"),
+    ) -> dict[str, object]:
+        return {
+            "systemAudio": services.system_audio_service.status(
+                session_id=session_id,
+                language=_clean(language),
+                prompt=_clean(prompt),
+                diarize=diarize,
+                chunk_millis=chunk_millis,
+            )
+        }
+
+    @app.post("/api/system-audio/start")
+    async def start_system_audio(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, object]:
+        session_id = "" if payload is None else str(payload.get("sessionId", "")).strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="sessionId is required.")
+        try:
+            chunk_millis = (
+                int(payload.get("chunkMillis"))
+                if payload and payload.get("chunkMillis") is not None
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="chunkMillis must be an integer.") from exc
+
+        session = _get_session_or_404(services, session_id)
+        try:
+            system_audio = await _to_thread(
+                services.system_audio_service.start_capture,
+                session_id=session_id,
+                language=_clean(payload.get("language") if payload else None),
+                prompt=_clean(payload.get("prompt") if payload else None),
+                diarize=_parse_bool(payload.get("diarize") if payload else None, default=True),
+                chunk_millis=chunk_millis,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        return {
+            "session": session.to_payload(),
+            "systemAudio": system_audio,
+        }
+
+    @app.post("/api/system-audio/stop")
+    async def stop_system_audio() -> dict[str, object]:
+        system_audio = await _to_thread(services.system_audio_service.stop_capture)
+        return {"systemAudio": system_audio}
 
     @app.get("/api/postprocess/catalog")
     async def postprocess_catalog() -> dict[str, object]:

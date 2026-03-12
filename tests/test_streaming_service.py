@@ -6,6 +6,8 @@ import wave
 
 from localscribe.context import ContextRefinementService
 from localscribe.config import Settings
+from localscribe.diarization.vad import SpeechWindow
+from localscribe.models import SpeakerProfile, TranscriptResult, TranscriptSegment
 from localscribe.engines.mock import MockEngine
 from localscribe.models import TranscriptionOptions
 from localscribe.storage import FileStore, SessionStore
@@ -80,6 +82,26 @@ def test_ingest_live_chunk_bypasses_vad_for_low_level_speechy_audio(tmp_path: Pa
     assert "fallback" in " ".join(result.warnings).lower()
 
 
+def test_ingest_live_chunk_boosts_very_quiet_audio_before_transcription(tmp_path: Path) -> None:
+    service, diarization_service = _service(tmp_path)
+    diarization_service.speech_windows = []
+    session = service.create_session()
+
+    result, updated_session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=1,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.004),
+            options=TranscriptionOptions(live=True, diarize=False),
+        ),
+    )
+
+    assert result.segments
+    assert updated_session.segments
+    assert result.warnings[0] == StreamingService.QUIET_INPUT_BOOST_WARNING
+
+
 def test_ingest_live_chunk_keeps_silence_empty_when_vad_rejects_it(tmp_path: Path) -> None:
     service, diarization_service = _service(tmp_path)
     diarization_service.speech_windows = []
@@ -103,6 +125,93 @@ def test_ingest_live_chunk_keeps_silence_empty_when_vad_rejects_it(tmp_path: Pat
     ]
 
 
+def test_live_caption_stays_draft_until_pause_then_finalizes(tmp_path: Path) -> None:
+    service, diarization_service = _service(tmp_path)
+    service.engine = _SequenceEngine(["hello everyone", "thanks for joining", "today."])
+    session = service.create_session()
+
+    diarization_service.speech_windows = [SpeechWindow(start=0.0, end=2.2)]
+    first, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=1,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False),
+        ),
+    )
+    assert session.segments == []
+    assert len(session.draft_segments) == 1
+    assert session.draft_segments[0].is_final is False
+    assert first.segments[0].text == "hello everyone"
+
+    diarization_service.speech_windows = [SpeechWindow(start=2.2, end=4.4)]
+    second, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=2,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False, offset_seconds=session.total_audio_seconds),
+        ),
+    )
+    assert session.segments == []
+    assert len(session.draft_segments) == 1
+    assert "thanks for joining" in session.draft_segments[0].text
+    assert second.segments[0].is_final is False
+
+    diarization_service.speech_windows = [SpeechWindow(start=4.4, end=5.6)]
+    third, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=3,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False, offset_seconds=session.total_audio_seconds),
+        ),
+    )
+    assert len(session.segments) == 1
+    assert session.draft_segments == []
+    assert session.segments[0].is_final is True
+    assert session.segments[0].text.endswith("today.")
+    assert third.segments[0].is_final is True
+
+
+def test_live_caption_finalizes_previous_turn_when_speaker_changes(tmp_path: Path) -> None:
+    service, diarization_service = _service(tmp_path)
+    service.engine = _SequenceEngine(["first speaker is talking", "second speaker jumps in"])
+    session = service.create_session()
+
+    diarization_service.speech_windows = [SpeechWindow(start=0.0, end=2.2)]
+    _, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=1,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False),
+        ),
+    )
+
+    service.engine.speaker = SpeakerProfile(speaker_id="speaker-2", label="Speaker 2", enrolled=False, samples=1)
+    diarization_service.speech_windows = [SpeechWindow(start=2.2, end=4.4)]
+    result, session = service.ingest_live_chunk(
+        session.session_id,
+        LiveChunkRequest(
+            sequence=2,
+            mime_type="audio/wav",
+            raw_bytes=_wav_bytes(amplitude=0.08),
+            options=TranscriptionOptions(live=True, diarize=False, offset_seconds=session.total_audio_seconds),
+        ),
+    )
+
+    assert len(session.segments) == 1
+    assert session.segments[0].speaker_id == "speaker-1"
+    assert len(session.draft_segments) == 1
+    assert session.draft_segments[0].speaker_id == "speaker-2"
+    assert result.segments[-1].is_final is False
+
+
 def _wav_bytes(*, amplitude: float, frequency_hz: float = 440.0, sample_rate: int = 16000, duration_ms: int = 2200) -> bytes:
     import math
 
@@ -119,3 +228,36 @@ def _wav_bytes(*, amplitude: float, frequency_hz: float = 440.0, sample_rate: in
             samples.extend(int(clamped * 32767).to_bytes(2, "little", signed=True))
         handle.writeframes(bytes(samples))
     return buffer.getvalue()
+
+
+class _SequenceEngine(MockEngine):
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__(Settings())
+        self.texts = list(texts)
+        self.index = 0
+        self.speaker = self._speaker
+
+    def transcribe_live_chunk(self, audio_path: str, options: TranscriptionOptions, session) -> TranscriptResult:
+        duration = 2.2
+        start = options.offset_seconds
+        end = start + duration
+        text = self.texts[self.index]
+        self.index += 1
+        segment = TranscriptSegment(
+            segment_id=f"seg-{self.index}",
+            start=start,
+            end=end,
+            text=text,
+            confidence=0.9,
+            speaker_id=self.speaker.speaker_id,
+            speaker_name=self.speaker.label,
+            is_final=False,
+            source="live",
+        )
+        return TranscriptResult(
+            engine_name=self.name,
+            segments=[segment],
+            speakers=[self.speaker],
+            duration_seconds=duration,
+            warnings=[],
+        )
