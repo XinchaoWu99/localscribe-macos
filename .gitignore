@@ -1,0 +1,14 @@
+.venv/
+.localscribe-data/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.build/

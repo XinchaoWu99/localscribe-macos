@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localscribe"
+version = "0.1.0"
+description = "Local-first browser app for macOS meeting transcription and speaker tracking."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "faster-whisper",
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "python-multipart>=0.0.20",
+  "requests>=2.32.0",
+  "silero-vad>=5.1.2",
+  "speechbrain>=1.0.3",
+  "torch>=2.6.0",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[project.scripts]
+localscribe = "localscribe.main:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+localscribe = ["static/*"]
