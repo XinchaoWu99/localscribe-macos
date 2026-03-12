@@ -19,6 +19,9 @@ class StreamingService:
     MAX_CHUNK_MILLIS = 10000
     LIVE_VAD_FALLBACK_RMS_NORMALIZED = 0.0025
     LIVE_VAD_FALLBACK_PEAK_NORMALIZED = 0.025
+    LOW_INPUT_WARNING_RMS_NORMALIZED = 0.0015
+    LOW_INPUT_WARNING_PEAK_NORMALIZED = 0.015
+    LOW_INPUT_WARNING = "Input level is very low. Check the selected microphone or audio source."
 
     def __init__(
         self,
@@ -139,12 +142,15 @@ class StreamingService:
                 ]
                 speech_windows = None
             else:
+                warnings = ["No speech detected in the latest audio chunk."]
+                if self._is_low_input(level_stats):
+                    warnings.insert(0, self.LOW_INPUT_WARNING)
                 result = TranscriptResult(
                     engine_name=self.engine.name,
                     segments=[],
                     speakers=list(session.speakers.values()),
                     duration_seconds=duration_seconds,
-                    warnings=["No speech detected in the latest audio chunk."],
+                    warnings=warnings,
                 )
         else:
             effective_options = self.context_refinement_service.build_live_options(session, request.options)
@@ -201,6 +207,12 @@ class StreamingService:
         return (
             level_stats.get("rmsNormalized", 0.0) >= self.LIVE_VAD_FALLBACK_RMS_NORMALIZED
             or level_stats.get("peakNormalized", 0.0) >= self.LIVE_VAD_FALLBACK_PEAK_NORMALIZED
+        )
+
+    def _is_low_input(self, level_stats: dict[str, float]) -> bool:
+        return (
+            level_stats.get("rmsNormalized", 0.0) < self.LOW_INPUT_WARNING_RMS_NORMALIZED
+            and level_stats.get("peakNormalized", 0.0) < self.LOW_INPUT_WARNING_PEAK_NORMALIZED
         )
 
 

@@ -87,7 +87,7 @@ def _split_segment_for_windows(
     segment: TranscriptSegment,
     windows: list[SpeechWindow],
 ) -> list[TranscriptSegment]:
-    overlaps = [window for window in windows if window.overlaps(segment.start, segment.end)]
+    overlaps = _matching_windows(segment, windows)
     if not overlaps:
         return []
 
@@ -117,7 +117,10 @@ def _split_segment_for_windows(
     start = max(segment.start, overlaps[0].start)
     end = min(segment.end, overlaps[-1].end)
     if end <= start:
-        return []
+        if not segment.text.strip() or segment.end > segment.start:
+            return []
+        start = overlaps[0].start
+        end = overlaps[-1].end
 
     return [
         segment.__class__(
@@ -133,6 +136,32 @@ def _split_segment_for_windows(
             words=list(segment.words),
         )
     ]
+
+
+def _matching_windows(segment: TranscriptSegment, windows: list[SpeechWindow]) -> list[SpeechWindow]:
+    overlaps = [window for window in windows if window.overlaps(segment.start, segment.end)]
+    if overlaps:
+        return overlaps
+    if not segment.text.strip():
+        return []
+    if segment.end > segment.start:
+        return []
+
+    point_matches = [window for window in windows if window.start <= segment.start <= window.end]
+    if point_matches:
+        return point_matches
+
+    nearest = _nearest_window(segment.start, windows)
+    return [nearest] if nearest is not None else []
+
+
+def _nearest_window(point: float, windows: list[SpeechWindow]) -> SpeechWindow | None:
+    if not windows:
+        return None
+    return min(
+        windows,
+        key=lambda window: min(abs(point - window.start), abs(point - window.end)),
+    )
 
 
 def _join_words(words) -> str:

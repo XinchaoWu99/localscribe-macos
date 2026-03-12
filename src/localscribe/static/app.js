@@ -23,6 +23,9 @@ const state = {
 
 const ALWAYS_ENABLE_CONTEXT_LINKING = true;
 const ALWAYS_ENABLE_POST_PROCESSING = true;
+const LOW_INPUT_WARNING = "Input level is very low. Check the selected microphone or audio source.";
+const NO_SPEECH_WARNING = "No speech detected in the latest audio chunk.";
+const LIVE_FALLBACK_WARNING = "Live speech fallback used because browser audio was below the default VAD gate.";
 
 const ENTRY_PRESETS = {
   microphone: {
@@ -1325,6 +1328,68 @@ function currentSessionReferenceLabel(session = state.session) {
   return "the live session";
 }
 
+function sessionHasWarning(fragment) {
+  const normalizedFragment = (fragment || "").trim().toLowerCase();
+  if (!normalizedFragment) {
+    return false;
+  }
+  return (state.session?.warnings || []).some((warning) => warning.toLowerCase().includes(normalizedFragment));
+}
+
+function hasLowInputWarning() {
+  return sessionHasWarning(LOW_INPUT_WARNING);
+}
+
+function hasSpeechDetectionWarning() {
+  return sessionHasWarning(NO_SPEECH_WARNING) || sessionHasWarning(LIVE_FALLBACK_WARNING);
+}
+
+function sessionNeedsSourceAttention() {
+  const chunkCount = Number(state.session?.chunkCount || 0);
+  const segmentCount = Number(state.transcript?.segments?.length || 0);
+  if (segmentCount > 0) {
+    return false;
+  }
+  if (chunkCount < 3) {
+    return false;
+  }
+  return hasLowInputWarning() || hasSpeechDetectionWarning();
+}
+
+function currentSourceAttentionCopy() {
+  const chunkCount = Number(state.session?.chunkCount || 0);
+  if (hasLowInputWarning()) {
+    return {
+      status: "Input too quiet",
+      summary: state.liveCapture?.awaitingAck
+        ? "The current chunk is still being checked, but the selected source is too quiet for reliable transcription."
+        : "Check the selected microphone or audio source. LocalScribe is not hearing enough speech yet.",
+      caption: `${currentSessionReferenceLabel()} is receiving very little usable audio.`,
+      lead: "The current source is too quiet for reliable speech recognition. Fix the input level before expecting transcript segments.",
+      hint: "The current source is too quiet for reliable transcription. Check the selected microphone or move closer before continuing.",
+      emptyTitle: "Input is too quiet",
+      emptyBody:
+        "LocalScribe is receiving very little signal from the selected source. Check the microphone choice, permission, distance, or source audio routing before expecting transcript text.",
+      helper:
+        "The selected source is extremely quiet right now. Check microphone selection, Safari microphone permission, or move closer to the mic.",
+    };
+  }
+  return {
+    status: "Check input",
+    summary: state.liveCapture?.awaitingAck
+      ? "The latest chunk is still being checked, but this session has not produced transcribable speech yet."
+      : "Audio is arriving, but it is not turning into transcript text yet. Recheck the chosen source and speak more clearly into it.",
+    caption: `${currentSessionReferenceLabel()} has streamed ${chunkCount} chunk${chunkCount === 1 ? "" : "s"} without transcript text yet.`,
+    lead: "Audio is arriving, but the current source still has not produced transcriptable speech.",
+    hint: "LocalScribe has checked multiple live chunks, but this source is still not producing transcript text. Recheck the microphone, source routing, or speaking distance.",
+    emptyTitle: "Audio is arriving, but not as transcript",
+    emptyBody:
+      "LocalScribe has already checked multiple live chunks from this session, but none have turned into transcript text yet. Reconfirm the microphone choice, source routing, and speaking distance before continuing.",
+    helper:
+      `LocalScribe has already checked ${chunkCount} live chunk${chunkCount === 1 ? "" : "s"} without transcript text yet. Reconfirm microphone selection, Safari permission, or source routing.`,
+  };
+}
+
 function updateCurrentSessionPanel() {
   const session = state.session;
   const sessionId = session?.sessionId;
@@ -1389,6 +1454,9 @@ function renderTranscript() {
   const liveActive = Boolean(state.liveCapture);
   const liveFinishing = Boolean(state.liveCapture?.stopRequested);
   const hasSession = Boolean(state.session?.sessionId);
+  const lowInput = hasLowInputWarning();
+  const sourceAttention = sessionNeedsSourceAttention();
+  const attentionCopy = sourceAttention ? currentSourceAttentionCopy() : null;
 
   els.modeValue.textContent = state.mode;
   els.durationValue.textContent = formatDuration(transcript?.durationSeconds || 0);
@@ -1410,7 +1478,9 @@ function renderTranscript() {
       ? "Edit any segment inline. Your changes are saved back to the live session while new chunks continue to arrive."
       : liveFinishing
         ? "LocalScribe is finishing the last buffered chunk now. Your transcript will settle here when it completes."
-        : liveActive
+        : sourceAttention && attentionCopy
+          ? attentionCopy.hint
+          : liveActive
           ? "Recording is already live. The first text appears after the current short chunk finishes processing."
           : hasSession
             ? "This session is ready. Start the mic when you want transcript segments to begin appearing here."
@@ -1477,6 +1547,9 @@ function renderTranscript() {
       emptyTitle = "Finishing the last live chunk";
       emptyBody =
         "The microphone has stopped, but the final buffered audio is still being transcribed locally. The first segment will appear here as soon as that pass completes.";
+    } else if (sourceAttention && attentionCopy) {
+      emptyTitle = attentionCopy.emptyTitle;
+      emptyBody = attentionCopy.emptyBody;
     } else if (liveActive) {
       emptyTitle = "Listening for the first transcript";
       emptyBody =
@@ -1747,6 +1820,8 @@ function updateSessionChrome() {
   const liveActive = Boolean(state.liveCapture);
   const liveFinishing = Boolean(state.liveCapture?.stopRequested);
   const sessionReference = currentSessionReferenceLabel();
+  const sourceAttention = sessionNeedsSourceAttention();
+  const attentionCopy = sourceAttention ? currentSourceAttentionCopy() : null;
 
   if (liveFinishing) {
     els.sessionStatusText.textContent = "Finishing live";
@@ -1754,6 +1829,10 @@ function updateSessionChrome() {
       ? `${sessionReference} is sending the final buffered audio chunk.`
       : "Waiting for the final live audio chunk to finish transcribing.";
     els.liveSummary.textContent = "Live capture is draining the last buffered audio before closing.";
+  } else if (liveActive && sourceAttention && attentionCopy) {
+    els.sessionStatusText.textContent = attentionCopy.status;
+    els.sessionCaption.textContent = sessionId ? attentionCopy.caption : attentionCopy.caption.replace(`${sessionReference} `, "");
+    els.liveSummary.textContent = attentionCopy.summary;
   } else if (liveActive) {
     els.sessionStatusText.textContent = "Recording live";
     els.sessionCaption.textContent = sessionId ? `${sessionReference} is streaming live audio.` : "A live session is actively recording.";
@@ -1771,7 +1850,9 @@ function updateSessionChrome() {
   }
 
   els.helperNote.textContent = liveActive
-    ? `Audio is flowing. Live segment length is ${formatChunkMillis(configuredChunkMillis())} and changes apply without restarting.${cleanupSessionNote()}`
+    ? sourceAttention && attentionCopy
+      ? `${attentionCopy.helper}${cleanupSessionNote()}`
+      : `Audio is flowing. Live segment length is ${formatChunkMillis(configuredChunkMillis())} and changes apply without restarting.${cleanupSessionNote()}`
     : captureHelperText();
   els.downloadExportButton.disabled = !sessionId;
   els.copyTranscriptButton.disabled = !composeTranscriptText(state.transcript?.segments || []);
@@ -1996,6 +2077,9 @@ function cleanupSessionNote() {
 function buildTimelineLead(segmentCount) {
   if (segmentCount > 0) {
     return "Live conversation segments are arriving in sequence, and you can correct each one inline while the session continues.";
+  }
+  if (sessionNeedsSourceAttention()) {
+    return currentSourceAttentionCopy().lead;
   }
   if (state.liveCapture?.stopRequested) {
     return "LocalScribe is finishing the last buffered live segment before this session closes.";

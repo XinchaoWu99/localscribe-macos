@@ -64,7 +64,7 @@ class WhisperKitServerEngine(TranscriptionEngine):
     def transcribe_file(self, audio_path: str, options: TranscriptionOptions) -> TranscriptResult:
         duration = probe_duration_seconds(Path(audio_path))
         payload = self._transcribe(Path(audio_path), options)
-        segments = self._segments_from_payload(payload, options.offset_seconds, "file")
+        segments = self._segments_from_payload(payload, options.offset_seconds, "file", clip_duration_seconds=duration)
         return TranscriptResult(
             engine_name=self.name,
             segments=segments,
@@ -77,7 +77,7 @@ class WhisperKitServerEngine(TranscriptionEngine):
     def transcribe_live_chunk(self, audio_path: str, options: TranscriptionOptions, session) -> TranscriptResult:
         duration = probe_duration_seconds(Path(audio_path))
         payload = self._transcribe(Path(audio_path), options)
-        segments = self._segments_from_payload(payload, options.offset_seconds, "live")
+        segments = self._segments_from_payload(payload, options.offset_seconds, "live", clip_duration_seconds=duration)
         return TranscriptResult(
             engine_name=self.name,
             segments=segments,
@@ -114,6 +114,7 @@ class WhisperKitServerEngine(TranscriptionEngine):
         payload: dict[str, object],
         offset_seconds: float,
         source: str,
+        clip_duration_seconds: float | None = None,
     ) -> list[TranscriptSegment]:
         raw_segments = payload.get("segments")
         if not isinstance(raw_segments, list):
@@ -134,16 +135,26 @@ class WhisperKitServerEngine(TranscriptionEngine):
         for entry in raw_segments:
             if not isinstance(entry, dict):
                 continue
+            segment_start, segment_end = _normalize_time_range(
+                entry.get("start", 0.0),
+                entry.get("end", 0.0),
+                clip_duration_seconds,
+            )
             words = []
             raw_words = entry.get("words")
             if isinstance(raw_words, list):
                 for raw_word in raw_words:
                     if not isinstance(raw_word, dict):
                         continue
+                    word_start, word_end = _normalize_time_range(
+                        raw_word.get("start", 0.0),
+                        raw_word.get("end", 0.0),
+                        clip_duration_seconds,
+                    )
                     words.append(
                         SegmentWord(
-                            start=float(raw_word.get("start", 0.0)) + offset_seconds,
-                            end=float(raw_word.get("end", 0.0)) + offset_seconds,
+                            start=word_start + offset_seconds,
+                            end=word_end + offset_seconds,
                             text=str(raw_word.get("word", "")).strip(),
                             confidence=_maybe_float(raw_word.get("probability")),
                         )
@@ -152,8 +163,8 @@ class WhisperKitServerEngine(TranscriptionEngine):
             segments.append(
                 TranscriptSegment(
                     segment_id=uuid4().hex,
-                    start=float(entry.get("start", 0.0)) + offset_seconds,
-                    end=float(entry.get("end", 0.0)) + offset_seconds,
+                    start=segment_start + offset_seconds,
+                    end=segment_end + offset_seconds,
                     text=str(entry.get("text", "")).strip(),
                     confidence=_maybe_float(entry.get("avg_logprob")),
                     source=source,
@@ -168,3 +179,24 @@ def _maybe_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_time_range(start_value, end_value, clip_duration_seconds: float | None) -> tuple[float, float]:
+    start = max(0.0, _maybe_float(start_value) or 0.0)
+    end = max(start, _maybe_float(end_value) or start)
+    if clip_duration_seconds is None:
+        return start, end
+
+    clip_duration = max(0.0, float(clip_duration_seconds))
+    if end <= clip_duration and start <= clip_duration:
+        return start, end
+
+    span = max(0.0, end - start)
+    if span >= clip_duration:
+        return 0.0, clip_duration
+
+    end = min(end, clip_duration)
+    start = min(start, end)
+    if end - start < span:
+        start = max(0.0, end - span)
+    return start, end

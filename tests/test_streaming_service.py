@@ -97,7 +97,10 @@ def test_ingest_live_chunk_keeps_silence_empty_when_vad_rejects_it(tmp_path: Pat
 
     assert result.segments == []
     assert updated_session.segments == []
-    assert result.warnings == ["No speech detected in the latest audio chunk."]
+    assert result.warnings == [
+        "Input level is very low. Check the selected microphone or audio source.",
+        "No speech detected in the latest audio chunk.",
+    ]
 
 
 def _wav_bytes(*, amplitude: float, frequency_hz: float = 440.0, sample_rate: int = 16000, duration_ms: int = 2200) -> bytes:
