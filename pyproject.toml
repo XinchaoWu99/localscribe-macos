@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localscribe"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first browser app for macOS meeting transcription and speaker tracking."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -12,6 +12,7 @@ dependencies = [
   "faster-whisper",
   "fastapi>=0.116.0",
   "httpx>=0.28.0",
+  "mlx-lm",
   "python-multipart>=0.0.20",
   "requests>=2.32.0",
   "silero-vad>=5.1.2",

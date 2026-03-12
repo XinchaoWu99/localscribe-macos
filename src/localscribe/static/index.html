@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LocalScribe</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260312t" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260312v" />
   </head>
   <body>
     <div class="backdrop-orb backdrop-orb-left"></div>
@@ -73,10 +73,10 @@
               <strong id="speakerState">Loading…</strong>
               <p id="speakerHint">Checking embedding pipeline.</p>
             </article>
-            <article class="hero-tile hero-tile-accent">
-              <span class="tile-label">Session state</span>
-              <strong id="sessionStatusText">Idle</strong>
-              <p id="sessionCaption">Create a live session to begin.</p>
+            <article class="hero-tile">
+              <span class="tile-label">Ollama runtime</span>
+              <strong id="ollamaState">Checking…</strong>
+              <p id="ollamaHint">Checking whether the local cleanup engine is running.</p>
             </article>
           </div>
         </div>
@@ -86,11 +86,24 @@
         <section class="launch-stage">
           <section class="workflow-card panel workflow-card-spotlight workflow-card-priority" id="liveWorkflowCard">
             <div class="capture-hero">
-              <div class="step-head capture-step-head">
-                <span class="step-index">01</span>
-                <div>
-                  <h2>Capture Live</h2>
-                  <p>Start recording from here, then use the setup cards below whenever you want to refine the live flow.</p>
+              <div class="capture-hero-copy">
+                <div class="step-head capture-step-head">
+                  <span class="step-index">01</span>
+                  <div>
+                    <h2>Capture Live</h2>
+                    <p>Arm a session, start the mic, and keep refining setup while LocalScribe keeps listening.</p>
+                  </div>
+                </div>
+
+                <div class="capture-compact-notes">
+                  <article class="capture-note">
+                    <strong>Best first run</strong>
+                    <p>Use Safari with a live microphone for the most reliable capture path.</p>
+                  </article>
+                  <article class="capture-note">
+                    <strong>Still adjustable live</strong>
+                    <p>Segment length, prompt bias, and cleanup routing can all change while recording.</p>
+                  </article>
                 </div>
               </div>
 
@@ -101,9 +114,9 @@
                 </div>
 
                 <div class="capture-actions">
-                  <button class="primary" id="createSessionButton">New Session</button>
-                  <button class="primary accent" id="startButton">Start Mic</button>
-                  <button class="secondary" id="stopButton" disabled>Stop</button>
+                  <button class="primary" id="createSessionButton">Create Session</button>
+                  <button class="primary accent" id="startButton">Start Live Mic</button>
+                  <button class="secondary" id="stopButton" disabled>Stop Capture</button>
                 </div>
 
                 <section class="current-session-card" aria-live="polite">
@@ -111,7 +124,7 @@
                     <span class="tile-label">Current live session</span>
                     <strong id="currentSessionHeading">No live session yet</strong>
                     <p class="microcopy" id="currentSessionHint">
-                      Create a live session first, then give it a clear name so it is easy to reopen and export later.
+                      Create a session, then give it a clear title so it is easy to reopen and export later.
                     </p>
                   </div>
                   <div class="current-session-actions">
@@ -127,21 +140,6 @@
                   </div>
                 </section>
               </div>
-            </div>
-
-            <div class="capture-notes capture-notes-grid">
-              <article class="capture-note">
-                <strong>Fastest path</strong>
-                <p>Use Safari plus live microphone when you want the most reliable first-time experience.</p>
-              </article>
-              <article class="capture-note">
-                <strong>Refine after you start</strong>
-                <p>Segment length, prompt bias, and cleanup settings can still be adjusted after capture begins.</p>
-              </article>
-              <article class="capture-note">
-                <strong>System audio option</strong>
-                <p>For Mac speaker output, use the ScreenCaptureKit helper or route audio into a loopback input.</p>
-              </article>
             </div>
           </section>
 
@@ -382,13 +380,13 @@
 
             <div class="field-grid cleanup-grid">
               <label class="field">
-                <span>Cleanup LLM</span>
+                <span>Cleanup task</span>
                 <select id="cleanupBackendSelect">
                   <option value="">Loading cleanup engines…</option>
                 </select>
               </label>
               <label class="field">
-                <span>Cleanup model</span>
+                <span>Cleanup model package</span>
                 <input
                   id="cleanupModelInput"
                   type="text"
@@ -400,7 +398,7 @@
             </div>
 
             <p class="microcopy" id="cleanupHint">
-              Choose which local LLM should polish punctuation and entity names after each chunk.
+              Choose which local cleanup path should polish punctuation, names, and acronyms after each chunk.
             </p>
 
             <p class="microcopy" id="helperNote">
@@ -443,6 +441,11 @@
                       <h3>Live segment editor</h3>
                       <p id="timelineHint">New transcript segments will appear here and can be corrected live.</p>
                     </div>
+                    <aside class="session-status-badge" aria-live="polite">
+                      <span class="tile-label">Current session status</span>
+                      <strong id="sessionStatusText">Idle</strong>
+                      <p id="sessionCaption">Create a live session to begin.</p>
+                    </aside>
                   </div>
                   <div class="timeline" id="timeline"></div>
                 </section>
@@ -496,6 +499,6 @@
       </article>
     </template>
 
-    <script src="/static/app.js?v=20260312t" defer></script>
+    <script src="/static/app.js?v=20260312v" defer></script>
   </body>
 </html>

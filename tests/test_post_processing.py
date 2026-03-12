@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
+
 from localscribe.models import LiveSession, SegmentWord, TranscriptResult, TranscriptSegment, TranscriptionOptions
 from localscribe.postprocess import LocalPostProcessingService
+from localscribe.postprocess.service import MLXPostProcessorBackend
 
 
 class FakePostProcessorBackend:
@@ -144,6 +147,23 @@ def test_post_processing_uses_requested_backend_and_model(monkeypatch) -> None:
         "model": "mlx-community/custom-cleanup-model",
     }
     assert updated.segments[0].text == "final sentence."
+
+
+def test_mlx_backend_reports_missing_runtime_with_install_hint(monkeypatch) -> None:
+    backend = MLXPostProcessorBackend("mlx-community/Qwen2.5-3B-Instruct-4bit", timeout_seconds=6.0)
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name: str, package: str | None = None):
+        if name == "mlx_lm":
+            raise ModuleNotFoundError("No module named 'mlx_lm'", name="mlx_lm")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    status = backend.status()
+
+    assert status["ready"] is False
+    assert "Run uv sync once to add mlx-lm." in str(status["warning"])
 
 
 def test_post_processing_rewrites_previous_tail_and_current_chunk() -> None:

@@ -183,6 +183,12 @@ class MLXPostProcessorBackend:
             importlib.import_module("mlx_lm")
             self._load_error = None
             return True
+        except ModuleNotFoundError as exc:
+            if exc.name == "mlx_lm":
+                self._load_error = "MLX cleanup runtime is not installed in this LocalScribe environment yet. Run uv sync once to add mlx-lm."
+                return False
+            self._load_error = str(exc)
+            return False
         except Exception as exc:
             self._load_error = str(exc)
             return False
@@ -196,8 +202,13 @@ class MLXPostProcessorBackend:
                 return True
             try:
                 mlx_lm = importlib.import_module("mlx_lm")
-                load = getattr(mlx_lm, "load")
-                generate = getattr(mlx_lm, "generate")
+                load = getattr(mlx_lm, "load", None)
+                generate = getattr(mlx_lm, "generate", None)
+                if load is None:
+                    mlx_utils = importlib.import_module("mlx_lm.utils")
+                    load = getattr(mlx_utils, "load")
+                if generate is None:
+                    raise AttributeError("mlx_lm.generate is not available in the installed MLX runtime.")
                 self._model, self._tokenizer = load(self.model)
                 self._generate = generate
                 self._loaded = True
@@ -212,22 +223,22 @@ class LocalPostProcessingService:
     BACKEND_OPTIONS: tuple[PostProcessorBackendOption, ...] = (
         PostProcessorBackendOption(
             backend_id="none",
-            label="Cleanup off",
-            description="Skip the local cleanup pass and keep the raw transcript stitching only.",
+            label="Raw transcript only",
+            description="Skip the cleanup pass and keep only the raw stitching layer.",
             default_model=None,
             model_placeholder="No model needed",
         ),
         PostProcessorBackendOption(
             backend_id="ollama",
-            label="Ollama",
-            description="Use a local Ollama chat model after each chunk for punctuation and entity cleanup.",
+            label="Punctuation and names via Ollama",
+            description="Use a local Ollama model after each chunk to repair punctuation, names, and acronyms.",
             default_model="qwen2.5:3b-instruct",
             model_placeholder="qwen2.5:3b-instruct",
         ),
         PostProcessorBackendOption(
             backend_id="mlx",
-            label="MLX",
-            description="Use an MLX model already available on this Mac for an on-device cleanup pass.",
+            label="Punctuation and names on-device",
+            description="Use an MLX model on this Mac after each chunk for on-device punctuation and entity cleanup.",
             default_model="mlx-community/Qwen2.5-3B-Instruct-4bit",
             model_placeholder="mlx-community/Qwen2.5-3B-Instruct-4bit",
         ),

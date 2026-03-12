@@ -1,8 +1,18 @@
+<p align="center">
+  <img src="docs/assets/localscribe-logo.svg" alt="LocalScribe logo" width="168" />
+</p>
+
 # LocalScribe
 
 LocalScribe is a local-first macOS live transcription workspace.
 
 It runs a browser UI on your Mac, keeps inference local, supports real-time transcription, detects speaker changes, lets you rename speakers directly in the transcript, and can optionally run a local cleanup pass for punctuation and entity correction after each chunk.
+
+## Release status
+
+Current release: `v0.2.0`
+
+LocalScribe is ready for developer use on macOS, especially Apple Silicon. It is best treated as a local-first transcription workspace rather than a polished notarized desktop app.
 
 ## What it does
 
@@ -73,6 +83,8 @@ source .venv/bin/activate
 ```bash
 uv sync --extra dev
 ```
+
+This installs the LocalScribe app runtime, test tooling, and optional local cleanup runtimes including MLX support.
 
 ### 7. Start the app
 

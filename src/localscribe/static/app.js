@@ -112,6 +112,8 @@ const els = {
   engineHint: document.querySelector("#engineHint"),
   speakerState: document.querySelector("#speakerState"),
   speakerHint: document.querySelector("#speakerHint"),
+  ollamaState: document.querySelector("#ollamaState"),
+  ollamaHint: document.querySelector("#ollamaHint"),
   starterPrimaryButton: document.querySelector("#starterPrimaryButton"),
   starterSecondaryButton: document.querySelector("#starterSecondaryButton"),
   starterModePill: document.querySelector("#starterModePill"),
@@ -404,7 +406,7 @@ function renderStarterLaunchState() {
   if (liveFinishing) {
     els.starterLaunchState.textContent = "Finishing";
     els.starterActionHint.textContent =
-      "The last buffered live segment is still being processed. The transcript will settle in place when it completes.";
+      "The final buffered segment is still being written. The transcript will settle in place when it completes.";
     els.starterPrimaryButton.disabled = true;
     els.starterSecondaryButton.textContent = "View Transcript Room";
     return;
@@ -412,7 +414,7 @@ function renderStarterLaunchState() {
 
   if (liveActive) {
     els.starterLaunchState.textContent = "Recording live";
-    els.starterActionHint.textContent = `LocalScribe is already transcribing from ${captureLabel}. Stay here or jump straight to the transcript room.`;
+    els.starterActionHint.textContent = `LocalScribe is already transcribing from ${captureLabel}. Stay here or jump straight into the transcript room.`;
     els.starterPrimaryButton.disabled = true;
     els.starterSecondaryButton.textContent = "View Transcript Room";
     return;
@@ -423,7 +425,7 @@ function renderStarterLaunchState() {
 
   if (sessionId) {
     els.starterLaunchState.textContent = "Session ready";
-    els.starterActionHint.textContent = `${sessionReference} is armed. Start from here and LocalScribe will immediately open ${captureLabel}.`;
+    els.starterActionHint.textContent = `${sessionReference} is ready. Start from here and LocalScribe will open ${captureLabel} immediately.`;
     return;
   }
 
@@ -452,6 +454,7 @@ async function refreshStatus() {
   els.engineHint.textContent = engine.warnings?.[0] || "Local engine ready.";
   els.speakerState.textContent = speaker.ready ? "Ready" : "Limited";
   els.speakerHint.textContent = speaker.warning || "Speaker embedding pipeline ready.";
+  renderOllamaStatus();
   els.chunkMillis.min = String(currentChunkMillisBounds().min);
   els.chunkMillis.max = String(currentChunkMillisBounds().max);
   els.chunkMillis.value = String(state.status.settings.chunkMillis);
@@ -475,6 +478,7 @@ async function refreshPostProcessCatalog(showErrors = false) {
     syncCleanupModelInput(true);
     renderPostProcessControls();
     renderModelControls();
+    renderOllamaStatus();
   } catch (error) {
     if (showErrors) {
       window.alert(error.message || "Could not load local cleanup engines.");
@@ -572,13 +576,52 @@ function renderPostProcessControls() {
 
   if (backend?.ready) {
     els.cleanupHint.textContent = modelName
-      ? `${backendName} is ready. New chunks will use ${modelName} for cleanup.`
+      ? `${backendName} is ready. New chunks will use ${modelName}.`
       : `${backendName} is ready for the next live chunks.`;
     return;
   }
 
   const warning = backend?.warning ? ` ${backend.warning}` : "";
   els.cleanupHint.textContent = `${backendName} is not ready yet.${warning || ` ${backend?.description || ""}`}`.trim();
+}
+
+function ollamaBackendStatus() {
+  const backends = state.postProcessCatalog?.backends || [];
+  return backends.find((backend) => backend.id === "ollama") || null;
+}
+
+function renderOllamaStatus() {
+  const status = state.status?.postProcessing || null;
+  const backend = ollamaBackendStatus();
+  const ollamaSelected = selectedCleanupBackend() === "ollama";
+  const statusUsesOllama = status?.backend === "ollama";
+  const modelName = ollamaSelected ? selectedCleanupModel() : backend?.defaultModel || status?.model || "qwen2.5:3b-instruct";
+
+  if (!status && !backend) {
+    els.ollamaState.textContent = "Checking…";
+    els.ollamaHint.textContent = "Checking whether the local cleanup engine is running.";
+    return;
+  }
+
+  const ollamaReady = Boolean(backend?.ready || (statusUsesOllama && status?.ready));
+  const warning = backend?.warning || (statusUsesOllama ? status?.warning : null);
+
+  if (ollamaReady) {
+    els.ollamaState.textContent = "Running";
+    if (ollamaSelected) {
+      els.ollamaHint.textContent = `Ollama is running locally. New live chunks can use ${modelName} right now.`;
+      return;
+    }
+    els.ollamaHint.textContent = `Ollama is available locally with ${modelName}. Switch cleanup to Ollama any time.`;
+    return;
+  }
+
+  els.ollamaState.textContent = "Not running";
+  if (warning) {
+    els.ollamaHint.textContent = `Ollama is not available right now. ${warning}`;
+    return;
+  }
+  els.ollamaHint.textContent = "Ollama is not available right now. Start the local Ollama service if you want cleanup assistance.";
 }
 
 async function refreshModelCatalog(showErrors = false) {
@@ -1412,7 +1455,7 @@ function updateCurrentSessionPanel() {
     saveButton.disabled = true;
     els.currentSessionHeading.textContent = "No live session yet";
     els.currentSessionHint.textContent =
-      "Create a live session first, then give it a clear name so it is easy to reopen and export later.";
+      "Create a session first, then give it a clear title so it stays easy to reopen and export later.";
     return;
   }
 
@@ -1433,10 +1476,10 @@ function updateCurrentSessionPanel() {
       "The last buffered chunk is still finishing. You can still rename this session before reopening or exporting it.";
   } else if (liveActive) {
     els.currentSessionHint.textContent =
-      "This live session can be renamed while recording. The new name appears in history and in the current transcript workspace immediately.";
+      "Rename this session while recording. The new title updates in history and in the transcript room immediately.";
   } else {
     els.currentSessionHint.textContent =
-      "This session is ready for live capture. Give it a clear name now so it is easier to find after the conversation ends.";
+      "This session is ready for live capture. Give it a clear title now so it is easier to find after the conversation ends.";
   }
 
   saveButton.disabled = draftTitle === savedTitle;
@@ -1838,7 +1881,7 @@ function updateSessionChrome() {
     els.sessionCaption.textContent = sessionId
       ? `${sessionReference} is sending the final buffered audio chunk.`
       : "Waiting for the final live audio chunk to finish transcribing.";
-    els.liveSummary.textContent = "Live capture is draining the last buffered audio before closing.";
+    els.liveSummary.textContent = "Wrapping up the last buffered audio chunk before capture closes.";
   } else if (liveActive && sourceAttention && attentionCopy) {
     els.sessionStatusText.textContent = attentionCopy.status;
     els.sessionCaption.textContent = sessionId ? attentionCopy.caption : attentionCopy.caption.replace(`${sessionReference} `, "");
@@ -1847,12 +1890,12 @@ function updateSessionChrome() {
     els.sessionStatusText.textContent = "Recording live";
     els.sessionCaption.textContent = sessionId ? `${sessionReference} is streaming live audio.` : "A live session is actively recording.";
     els.liveSummary.textContent = state.liveCapture?.awaitingAck
-      ? "The backend is processing the latest chunk. Audio keeps buffering locally until it catches up."
+      ? "Writing the latest live chunk now. Audio keeps buffering locally until it catches up."
       : "Microphone is live and streaming short chunks.";
   } else if (sessionId) {
     els.sessionStatusText.textContent = "Session ready";
     els.sessionCaption.textContent = `${sessionReference} is armed for live capture.`;
-    els.liveSummary.textContent = "You can start the mic or continue reviewing the latest transcript.";
+    els.liveSummary.textContent = "Start the mic from here or keep reviewing the current transcript.";
   } else {
     els.sessionStatusText.textContent = "Idle";
     els.sessionCaption.textContent = "Create a live session to begin.";
