@@ -546,6 +546,40 @@ h3 {
   gap: 10px;
 }
 
+.current-session-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px 15px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(30, 90, 75, 0.08), rgba(255, 255, 255, 0.88)),
+    rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(30, 90, 75, 0.12);
+}
+
+.current-session-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.current-session-copy strong {
+  font-size: 1rem;
+}
+
+.current-session-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.current-session-input {
+  min-height: 48px;
+  padding: 11px 13px;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
 .capture-notes {
   display: grid;
   gap: 10px;
@@ -1474,6 +1508,10 @@ button:disabled {
   .capture-actions,
   .summary-strip,
   .scenario-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .current-session-actions {
     grid-template-columns: 1fr;
   }
 

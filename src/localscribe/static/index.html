@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LocalScribe</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260312q" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260312r" />
   </head>
   <body>
     <div class="backdrop-orb backdrop-orb-left"></div>
@@ -105,6 +105,27 @@
                   <button class="primary accent" id="startButton">Start Mic</button>
                   <button class="secondary" id="stopButton" disabled>Stop</button>
                 </div>
+
+                <section class="current-session-card" aria-live="polite">
+                  <div class="current-session-copy">
+                    <span class="tile-label">Current live session</span>
+                    <strong id="currentSessionHeading">No live session yet</strong>
+                    <p class="microcopy" id="currentSessionHint">
+                      Create a live session first, then give it a clear name so it is easy to reopen and export later.
+                    </p>
+                  </div>
+                  <div class="current-session-actions">
+                    <input
+                      class="current-session-input"
+                      id="currentSessionTitleInput"
+                      type="text"
+                      placeholder="Create a live session first"
+                      aria-label="Current live session name"
+                      disabled
+                    />
+                    <button class="secondary" id="currentSessionTitleSave" type="button" disabled>Save Name</button>
+                  </div>
+                </section>
               </div>
             </div>
 
@@ -394,9 +415,7 @@
               <div>
                 <p class="eyebrow stage-eyebrow">Transcript room</p>
                 <h2>Review the conversation as it lands</h2>
-                <p class="stage-lede" id="timelineLead">
-                  Start a live session to populate the transcript timeline.
-                </p>
+                <p class="stage-lede" id="timelineLead">Start a live session to populate the transcript timeline.</p>
               </div>
               <div class="stage-actions">
                 <label class="inline-select">
@@ -477,6 +496,6 @@
       </article>
     </template>
 
-    <script src="/static/app.js?v=20260312q" defer></script>
+    <script src="/static/app.js?v=20260312r" defer></script>
   </body>
 </html>

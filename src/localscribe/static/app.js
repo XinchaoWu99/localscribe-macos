@@ -156,6 +156,10 @@ const els = {
   startButton: document.querySelector("#startButton"),
   stopButton: document.querySelector("#stopButton"),
   livePill: document.querySelector("#livePill"),
+  currentSessionHeading: document.querySelector("#currentSessionHeading"),
+  currentSessionHint: document.querySelector("#currentSessionHint"),
+  currentSessionTitleInput: document.querySelector("#currentSessionTitleInput"),
+  currentSessionTitleSave: document.querySelector("#currentSessionTitleSave"),
   modeValue: document.querySelector("#modeValue"),
   durationValue: document.querySelector("#durationValue"),
   segmentCountValue: document.querySelector("#segmentCountValue"),
@@ -229,9 +233,26 @@ function bindEvents() {
   els.starterSecondaryButton.addEventListener("click", () => {
     handleStarterSecondaryAction();
   });
-  els.createSessionButton.addEventListener("click", createSession);
+  els.createSessionButton.addEventListener("click", () => {
+    void createSession({ focusTitleInput: true });
+  });
   els.startButton.addEventListener("click", startMic);
   els.stopButton.addEventListener("click", stopMic);
+  els.currentSessionTitleSave.addEventListener("click", () => {
+    void saveCurrentSessionTitle();
+  });
+  els.currentSessionTitleInput.addEventListener("input", () => {
+    updateCurrentSessionPanel();
+  });
+  els.currentSessionTitleInput.addEventListener("blur", () => {
+    void saveCurrentSessionTitle();
+  });
+  els.currentSessionTitleInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveCurrentSessionTitle();
+    }
+  });
   els.downloadExportButton.addEventListener("click", downloadExport);
   els.copyTranscriptButton.addEventListener("click", copyTranscript);
   els.clearHistoryButton.addEventListener("click", () => {
@@ -373,6 +394,7 @@ function renderStarterLaunchState() {
   const liveActive = Boolean(state.liveCapture);
   const liveFinishing = Boolean(state.liveCapture?.stopRequested);
   const captureLabel = entryPreset.label.toLowerCase();
+  const sessionReference = currentSessionReferenceLabel();
 
   if (liveFinishing) {
     els.starterLaunchState.textContent = "Finishing";
@@ -396,7 +418,7 @@ function renderStarterLaunchState() {
 
   if (sessionId) {
     els.starterLaunchState.textContent = "Session ready";
-    els.starterActionHint.textContent = `Session ${sessionId.slice(0, 8)} is armed. Start from here and LocalScribe will immediately open ${captureLabel}.`;
+    els.starterActionHint.textContent = `${sessionReference} is armed. Start from here and LocalScribe will immediately open ${captureLabel}.`;
     return;
   }
 
@@ -898,7 +920,7 @@ async function switchSelectedModel() {
   }
 }
 
-async function createSession() {
+async function createSession({ focusTitleInput = false } = {}) {
   await flushPendingSegmentTextSaves();
   const response = await fetch("/api/sessions", { method: "POST" });
   const data = await response.json();
@@ -909,6 +931,10 @@ async function createSession() {
   updateSessionChrome();
   await refreshSessionHistory();
   renderTranscript();
+  if (focusTitleInput) {
+    els.currentSessionTitleInput.focus();
+    els.currentSessionTitleInput.select();
+  }
 }
 
 async function startMic() {
@@ -1270,18 +1296,105 @@ function setTranscriptFromSession() {
   };
 }
 
+function sessionIdentityParts(session = state.session) {
+  const title = (session?.title || "").trim();
+  const sessionId = session?.sessionId || "";
+  const shortId = sessionId ? sessionId.slice(0, 8) : "";
+  return { title, sessionId, shortId };
+}
+
+function currentSessionDisplayLabel({ session = state.session, fallback = "No session", shortIdOnly = false } = {}) {
+  const { title, shortId } = sessionIdentityParts(session);
+  if (title) {
+    return title;
+  }
+  if (shortId) {
+    return shortIdOnly ? shortId : `Session ${shortId}`;
+  }
+  return fallback;
+}
+
+function currentSessionReferenceLabel(session = state.session) {
+  const { title, shortId } = sessionIdentityParts(session);
+  if (title) {
+    return `"${title}"`;
+  }
+  if (shortId) {
+    return `Session ${shortId}`;
+  }
+  return "the live session";
+}
+
+function updateCurrentSessionPanel() {
+  const session = state.session;
+  const sessionId = session?.sessionId;
+  const liveActive = Boolean(state.liveCapture);
+  const liveFinishing = Boolean(state.liveCapture?.stopRequested);
+  const savedTitle = (session?.title || "").trim();
+  const input = els.currentSessionTitleInput;
+  const saveButton = els.currentSessionTitleSave;
+
+  if (!sessionId) {
+    input.dataset.sessionId = "";
+    input.value = "";
+    input.placeholder = "Create a live session first";
+    input.disabled = true;
+    saveButton.disabled = true;
+    els.currentSessionHeading.textContent = "No live session yet";
+    els.currentSessionHint.textContent =
+      "Create a live session first, then give it a clear name so it is easy to reopen and export later.";
+    return;
+  }
+
+  const shouldResetInput = input.dataset.sessionId !== sessionId || document.activeElement !== input;
+  if (shouldResetInput) {
+    input.value = savedTitle;
+  }
+  input.dataset.sessionId = sessionId;
+  input.placeholder = "Name this live session";
+  input.disabled = false;
+
+  const draftTitle = input.value.trim();
+  const headingTitle = draftTitle || savedTitle || `Session ${sessionId.slice(0, 8)}`;
+  els.currentSessionHeading.textContent = headingTitle;
+
+  if (liveFinishing) {
+    els.currentSessionHint.textContent =
+      "The last buffered chunk is still finishing. You can still rename this session before reopening or exporting it.";
+  } else if (liveActive) {
+    els.currentSessionHint.textContent =
+      "This live session can be renamed while recording. The new name appears in history and in the current transcript workspace immediately.";
+  } else {
+    els.currentSessionHint.textContent =
+      "This session is ready for live capture. Give it a clear name now so it is easier to find after the conversation ends.";
+  }
+
+  saveButton.disabled = draftTitle === savedTitle;
+}
+
+async function saveCurrentSessionTitle() {
+  const sessionId = state.session?.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  await renameSession(sessionId, els.currentSessionTitleInput.value);
+}
+
 function renderTranscript() {
   const transcript = state.transcript;
   const segments = transcript?.segments || [];
   const speakers = transcript?.speakers || [];
   const warnings = transcript?.warnings || [];
   const focusedEditor = captureFocusedSegmentEditor();
+  const liveActive = Boolean(state.liveCapture);
+  const liveFinishing = Boolean(state.liveCapture?.stopRequested);
+  const hasSession = Boolean(state.session?.sessionId);
 
   els.modeValue.textContent = state.mode;
   els.durationValue.textContent = formatDuration(transcript?.durationSeconds || 0);
   els.segmentCountValue.textContent = String(segments.length);
   els.speakerCountValue.textContent = String(speakers.length);
-  els.sessionIdPill.textContent = state.session?.sessionId ? state.session.sessionId.slice(0, 8) : "No session";
+  els.sessionIdPill.textContent = truncateText(currentSessionDisplayLabel(), 32);
   els.timelineLead.textContent = buildTimelineLead(segments.length);
   els.rosterLead.textContent =
     speakers.length > 0
@@ -1295,7 +1408,14 @@ function renderTranscript() {
   els.timelineHint.textContent =
     segments.length > 0
       ? "Edit any segment inline. Your changes are saved back to the live session while new chunks continue to arrive."
-      : "Start a live session to populate the live editor.";
+      : liveFinishing
+        ? "LocalScribe is finishing the last buffered chunk now. Your transcript will settle here when it completes."
+        : liveActive
+          ? "Recording is already live. The first text appears after the current short chunk finishes processing."
+          : hasSession
+            ? "This session is ready. Start the mic when you want transcript segments to begin appearing here."
+            : "Create a live session to populate the live editor.";
+  updateCurrentSessionPanel();
 
   els.warnings.replaceChildren();
   warnings.forEach((warning) => {
@@ -1350,8 +1470,23 @@ function renderTranscript() {
   if (segments.length === 0) {
     const node = document.createElement("div");
     node.className = "empty-state";
-    node.innerHTML =
-      "<strong>No transcript yet</strong><p>Use the live capture controls to start streaming audio into the local transcription pipeline. When segments arrive, you can edit them here live.</p>";
+    let emptyTitle = "No transcript yet";
+    let emptyBody =
+      "Use the live capture controls to start streaming audio into the local transcription pipeline. When segments arrive, you can edit them here live.";
+    if (liveFinishing) {
+      emptyTitle = "Finishing the last live chunk";
+      emptyBody =
+        "The microphone has stopped, but the final buffered audio is still being transcribed locally. The first segment will appear here as soon as that pass completes.";
+    } else if (liveActive) {
+      emptyTitle = "Listening for the first transcript";
+      emptyBody =
+        "Recording is live right now. The first segment appears after LocalScribe closes the current short chunk, applies local cleanup, and writes it into this editor.";
+    } else if (hasSession) {
+      emptyTitle = "Session ready for live capture";
+      emptyBody =
+        "This session is armed and can be named now. Start the mic when you want the transcript editor to begin filling with live segments.";
+    }
+    node.innerHTML = `<strong>${escapeHtml(emptyTitle)}</strong><p>${escapeHtml(emptyBody)}</p>`;
     els.timeline.append(node);
     renderSessionHistory();
     return;
@@ -1461,7 +1596,9 @@ async function quickExport(sessionId, format) {
 async function renameSession(sessionId, title) {
   const normalized = (title || "").trim();
   const currentSession = state.sessions.find((session) => session.sessionId === sessionId);
-  if ((currentSession?.title || "") === normalized) {
+  const currentTitle = (currentSession?.title || (state.session?.sessionId === sessionId ? state.session.title : "") || "").trim();
+  if (currentTitle === normalized) {
+    updateCurrentSessionPanel();
     return;
   }
 
@@ -1609,25 +1746,23 @@ function updateSessionChrome() {
   const sessionId = state.session?.sessionId;
   const liveActive = Boolean(state.liveCapture);
   const liveFinishing = Boolean(state.liveCapture?.stopRequested);
-  const segmentCount = state.transcript?.segments?.length || 0;
+  const sessionReference = currentSessionReferenceLabel();
 
   if (liveFinishing) {
     els.sessionStatusText.textContent = "Finishing live";
     els.sessionCaption.textContent = sessionId
-      ? `Session ${sessionId.slice(0, 8)} is sending the final buffered audio chunk.`
+      ? `${sessionReference} is sending the final buffered audio chunk.`
       : "Waiting for the final live audio chunk to finish transcribing.";
     els.liveSummary.textContent = "Live capture is draining the last buffered audio before closing.";
   } else if (liveActive) {
     els.sessionStatusText.textContent = "Recording live";
-    els.sessionCaption.textContent = sessionId
-      ? `Session ${sessionId.slice(0, 8)} is streaming microphone audio.`
-      : "A live session is actively recording.";
+    els.sessionCaption.textContent = sessionId ? `${sessionReference} is streaming live audio.` : "A live session is actively recording.";
     els.liveSummary.textContent = state.liveCapture?.awaitingAck
       ? "The backend is processing the latest chunk. Audio keeps buffering locally until it catches up."
       : "Microphone is live and streaming short chunks.";
   } else if (sessionId) {
     els.sessionStatusText.textContent = "Session ready";
-    els.sessionCaption.textContent = `Session ${sessionId.slice(0, 8)} is armed for live capture.`;
+    els.sessionCaption.textContent = `${sessionReference} is armed for live capture.`;
     els.liveSummary.textContent = "You can start the mic or continue reviewing the latest transcript.";
   } else {
     els.sessionStatusText.textContent = "Idle";
@@ -1640,6 +1775,7 @@ function updateSessionChrome() {
     : captureHelperText();
   els.downloadExportButton.disabled = !sessionId;
   els.copyTranscriptButton.disabled = !composeTranscriptText(state.transcript?.segments || []);
+  updateCurrentSessionPanel();
   renderStarterLaunchState();
 }
 
@@ -1860,6 +1996,15 @@ function cleanupSessionNote() {
 function buildTimelineLead(segmentCount) {
   if (segmentCount > 0) {
     return "Live conversation segments are arriving in sequence, and you can correct each one inline while the session continues.";
+  }
+  if (state.liveCapture?.stopRequested) {
+    return "LocalScribe is finishing the last buffered live segment before this session closes.";
+  }
+  if (state.liveCapture) {
+    return "Recording is live. The first segment will appear as soon as the current chunk completes.";
+  }
+  if (state.session?.sessionId) {
+    return "This live session is ready. Start the microphone when you want the editor to begin filling.";
   }
   return "Start a live session to populate the live segment editor.";
 }
