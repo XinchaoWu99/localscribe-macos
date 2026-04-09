@@ -518,6 +518,18 @@ h3 {
   padding: 20px;
 }
 
+.live-transcribing-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.live-transcribing-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+}
+
 .workflow-card.is-guided {
   border-color: rgba(30, 90, 75, 0.28);
   box-shadow: 0 22px 44px rgba(30, 90, 75, 0.12);

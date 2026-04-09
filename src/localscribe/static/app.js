@@ -208,6 +208,10 @@ const els = {
   timelineItemTemplate: document.querySelector("#timelineItemTemplate"),
   dialInCard: document.querySelector("#dialInCard"),
   liveWorkflowCard: document.querySelector("#liveWorkflowCard"),
+  liveTranscribingPanel: document.querySelector("#liveTranscribingPanel"),
+  liveTranscribingPill: document.querySelector("#liveTranscribingPill"),
+  liveTranscribingCaption: document.querySelector("#liveTranscribingCaption"),
+  jumpToTranscriptButton: document.querySelector("#jumpToTranscriptButton"),
   transcriptStage: document.querySelector(".transcript-stage"),
 };
 
@@ -320,6 +324,9 @@ function bindEvents() {
     void refreshSystemAudioStatus(false);
   });
   els.copySystemAudioCommandButton.addEventListener("click", copySystemAudioCommand);
+  els.jumpToTranscriptButton.addEventListener("click", () => {
+    scrollToWorkflowCard(els.transcriptStage);
+  });
   els.installModelButton.addEventListener("click", () => {
     void installSelectedModel();
   });
@@ -418,7 +425,25 @@ function toggleStarterPanel(collapse, { scroll = false } = {}) {
 }
 
 function renderStarterLaunchState() {
-  return;
+  const liveActive = Boolean(state.liveCapture);
+  const liveFinishing = Boolean(state.liveCapture?.stopRequested);
+  const isTranscribing = liveActive || liveFinishing;
+  const wasAlreadyVisible = !els.liveTranscribingPanel.hidden;
+
+  els.liveTranscribingPanel.hidden = !isTranscribing;
+
+  if (isTranscribing) {
+    els.starterPanel.hidden = true;
+    els.dialInCard.hidden = true;
+    els.liveTranscribingPill.textContent = liveFinishing ? "Finishing" : "Recording";
+    els.liveTranscribingCaption.textContent = els.liveSummary.textContent;
+    if (!wasAlreadyVisible) {
+      scrollToWorkflowCard(els.transcriptStage);
+    }
+  } else {
+    els.starterPanel.hidden = state.starterCollapsed;
+    els.dialInCard.hidden = !state.starterCollapsed;
+  }
 }
 
 function focusDialInControls() {
