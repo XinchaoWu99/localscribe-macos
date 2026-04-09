@@ -1,5 +1,27 @@
 const { test, expect } = require("@playwright/test");
 
+test("transcript editors are writable and editable during active live recording", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#startButton").click();
+
+  await expect(page.locator("#livePill")).toHaveText("Recording");
+  await expect(page.locator("#liveTranscribingPanel")).toBeVisible();
+
+  await expect(page.locator(".segment-editor").first()).toHaveValue(/captured in mock mode/, {
+    timeout: 20000,
+  });
+
+  const editor = page.locator(".segment-editor").first();
+  await expect(editor).toHaveJSProperty("readOnly", false);
+
+  const editedText = "Edited while recording";
+  await editor.fill(editedText);
+  await expect(editor).toHaveValue(editedText);
+
+  await page.locator("#stopButton").click();
+  await expect(page.locator("#livePill")).toHaveText("Idle", { timeout: 20000 });
+});
+
 test("live session transcript editors stay writable", async ({ page, request }) => {
   const title = `E2E live editor ${Date.now()}`;
   const sessionId = await createNamedSession(request, title);
