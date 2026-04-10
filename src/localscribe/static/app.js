@@ -208,6 +208,10 @@ const els = {
   timelineItemTemplate: document.querySelector("#timelineItemTemplate"),
   dialInCard: document.querySelector("#dialInCard"),
   liveWorkflowCard: document.querySelector("#liveWorkflowCard"),
+  liveTranscribingPanel: document.querySelector("#liveTranscribingPanel"),
+  liveTranscribingPill: document.querySelector("#liveTranscribingPill"),
+  liveTranscribingCaption: document.querySelector("#liveTranscribingCaption"),
+  jumpToTranscriptButton: document.querySelector("#jumpToTranscriptButton"),
   transcriptStage: document.querySelector(".transcript-stage"),
 };
 
@@ -320,6 +324,9 @@ function bindEvents() {
     void refreshSystemAudioStatus(false);
   });
   els.copySystemAudioCommandButton.addEventListener("click", copySystemAudioCommand);
+  els.jumpToTranscriptButton.addEventListener("click", () => {
+    scrollToWorkflowCard(els.transcriptStage);
+  });
   els.installModelButton.addEventListener("click", () => {
     void installSelectedModel();
   });
@@ -418,7 +425,27 @@ function toggleStarterPanel(collapse, { scroll = false } = {}) {
 }
 
 function renderStarterLaunchState() {
-  return;
+  const liveActive = Boolean(state.liveCapture);
+  const liveFinishing = liveActive && Boolean(state.liveCapture?.stopRequested);
+  const isTranscribing = liveActive || liveFinishing;
+  const wasAlreadyVisible = !els.liveTranscribingPanel.hidden;
+
+  els.liveTranscribingPanel.hidden = !isTranscribing;
+
+  if (isTranscribing) {
+    els.starterPanel.hidden = true;
+    els.dialInCard.hidden = true;
+    els.liveTranscribingPill.textContent = liveFinishing ? "Finishing" : "Recording";
+    els.liveTranscribingCaption.textContent =
+      els.liveSummary.textContent ||
+      "Recording is live. Transcript segments appear below and can be edited while recording.";
+    if (!wasAlreadyVisible) {
+      scrollToWorkflowCard(els.transcriptStage);
+    }
+  } else {
+    els.starterPanel.hidden = state.starterCollapsed;
+    els.dialInCard.hidden = !state.starterCollapsed;
+  }
 }
 
 function focusDialInControls() {
@@ -1904,7 +1931,7 @@ function renderTranscript() {
   els.timelineHint.textContent =
     segments.length > 0
       ? segments.some((segment) => segment.isFinal === false)
-        ? "Final lines can be edited inline. The live caption line keeps updating until the speaker pauses or someone else cuts in."
+        ? "All segments can be edited inline. Click into the live caption to lock your wording — new speech will continue in the next segment."
         : "Edit any finished segment inline. Your changes are saved back to the live session while new speech continues to arrive."
       : liveFinishing
         ? "LocalScribe is finishing the last buffered chunk now. Your transcript will settle here when it completes."

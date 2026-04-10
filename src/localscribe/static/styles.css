@@ -24,6 +24,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -516,6 +520,18 @@ h3 {
 
 .workflow-card {
   padding: 20px;
+}
+
+.live-transcribing-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.live-transcribing-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
 }
 
 .workflow-card.is-guided {
